@@ -69,6 +69,7 @@ export default class Game {
 
   // Cutscene between levels
   private _cutscene:          Cutscene | null = null;
+  private _streetGroup:       THREE.Group | null = null;  // persists after cutscene ends
   private _csFollowX          = 0;      // eased camera X during travel shots
   private _csRoadStartX       = 8;      // where the road begins (right of hedge)
   private _nextCutsceneLevel  = 1;
@@ -1143,8 +1144,12 @@ export default class Game {
     this._csLevelBuilt      = false;
     this._csPrevPhase       = '';
     this._csRoadStartX      = -(this.hedge.halfWidth + 2.5);
+    if (this._cutscene) { this._cutscene.disposeStreet(); }
+    if (this._streetGroup) { this.scene.remove(this._streetGroup); this._streetGroup = null; }
     this._cutscene = new Cutscene(this._csRoadStartX, nextLevel);
     this.scene.add(this._cutscene.group);
+    this.scene.add(this._cutscene.streetGroup);
+    this._streetGroup = this._cutscene.streetGroup;
     this.camel.group.visible  = false;
     this.couple.group.visible = false;
     // Camera starts right of car; depart phase eases from here

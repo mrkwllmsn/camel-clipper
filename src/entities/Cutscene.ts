@@ -30,6 +30,8 @@ const TRAVEL = 38;   // how far right the car drives before turning around
 
 export class Cutscene {
   readonly group:       THREE.Group;
+  /** Street houses — added to the scene separately so they survive cutscene disposal. */
+  readonly streetGroup: THREE.Group;
   readonly roadStartX:  number;
 
   private _t             = 0;
@@ -46,8 +48,9 @@ export class Cutscene {
 
   constructor(roadStartX: number, level = 1, onLoaded?: () => void) {
     this.roadStartX = roadStartX;
-    this._onLoaded  = onLoaded ?? null;
-    this.group      = new THREE.Group();
+    this._onLoaded   = onLoaded ?? null;
+    this.group       = new THREE.Group();
+    this.streetGroup = new THREE.Group();
 
     this._initStreetMats();
     this._buildBackground(roadStartX, level);
@@ -133,9 +136,13 @@ export class Cutscene {
     const scales = [0.85, 0.92, 0.88, 0.95, 0.90, 0.87];
     const farSideOx  = [-12, -28, -44, -60, -76, -92];
     const nearSideOx = [-20, -36, -52, -68, -84];
+    const farRightOx  = [24, 40, 56, 72];
+    const nearRightOx = [30, 46, 62];
 
-    const farBase  = 1000 + level * 11;  // 11 apart so far/near seed ranges never collide
-    const nearBase = 1000 + level * 11 + 100;
+    const farBase      = 1000 + level * 11;
+    const nearBase     = 1000 + level * 11 + 100;
+    const farRightBase = 1000 + level * 11 + 200;
+    const nearRightBase= 1000 + level * 11 + 300;
 
     const pickMats = (seed: number) => {
       const r = mulberry32(seed);
@@ -154,7 +161,7 @@ export class Cutscene {
       house.traverse((o) => {
         if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
       });
-      this.group.add(house);
+      this.streetGroup.add(house);
     }
 
     for (let i = 0; i < nearSideOx.length; i++) {
@@ -166,7 +173,30 @@ export class Cutscene {
       house.traverse((o) => {
         if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
       });
-      this.group.add(house);
+      this.streetGroup.add(house);
+    }
+
+    for (let i = 0; i < farRightOx.length; i++) {
+      const seed  = farRightBase + i;
+      const house = createLowLodHouse(seed, pickMats(seed));
+      house.scale.setScalar(scales[i % scales.length]);
+      house.position.set(startX + farRightOx[i], 0, ROAD_Z + 17);
+      house.traverse((o) => {
+        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
+      });
+      this.streetGroup.add(house);
+    }
+
+    for (let i = 0; i < nearRightOx.length; i++) {
+      const seed  = nearRightBase + i;
+      const house = createLowLodHouse(seed, pickMats(seed));
+      house.scale.setScalar(scales[i % scales.length]);
+      house.rotation.y = Math.PI;
+      house.position.set(startX + nearRightOx[i], 0, ROAD_Z - 14);
+      house.traverse((o) => {
+        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
+      });
+      this.streetGroup.add(house);
     }
   }
 
@@ -294,6 +324,13 @@ export class Cutscene {
 
   dispose(): void {
     this.group.traverse(o => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh) m.geometry.dispose();
+    });
+  }
+
+  disposeStreet(): void {
+    this.streetGroup.traverse(o => {
       const m = o as THREE.Mesh;
       if (m.isMesh) m.geometry.dispose();
     });
