@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --open",
     "build": "vue-tsc && vite build",
-    "build:docs": "vue-tsc && vite build --outDir ./docs --emptyOutDir --base ./",
+    "build:docs": "vue-tsc && vite build --outDir ./docs --emptyOutDir --base ./ && touch ./docs/.nojekyll",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit"
   },
