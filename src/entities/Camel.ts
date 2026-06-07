@@ -27,7 +27,7 @@ export class Camel {
   private async _loadGLB(): Promise<void> {
     try {
       const loader = new GLTFLoader();
-      const gltf   = await loader.loadAsync('/models/camel2.glb');
+      const gltf   = await loader.loadAsync(`${import.meta.env.BASE_URL}models/camel2.glb`);
       const model  = gltf.scene;
 
       const box  = new THREE.Box3().setFromObject(model);

@@ -201,7 +201,7 @@ export default class Game {
     const loader = new THREE.TextureLoader();
 
     // Grass lawn — the main ground, covering everything.
-    const grassTex = loader.load('/textures/grass1.jpg');
+    const grassTex = loader.load(`${import.meta.env.BASE_URL}textures/grass1.jpg`);
     grassTex.wrapS = grassTex.wrapT = THREE.RepeatWrapping;
     grassTex.repeat.set(40, 20);
     const grass = new THREE.Mesh(
@@ -218,14 +218,14 @@ export default class Game {
 
     // Stone patio — a strip in front of the hedge where the camel works.
     // Much smaller than the lawn so most of the ground reads as grass.
-    const floorTex = loader.load('/textures/huge_floor_1.jpg');
+    const floorTex = loader.load(`${import.meta.env.BASE_URL}textures/huge_floor_1.jpg`);
     floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
     floorTex.repeat.set(20, 2);
     // Height map for relief: stones are white (high), mortar black (low).
     // Use as a bumpMap (per-pixel normal shading) instead of a displacementMap —
     // displacement needs more verts per stone than is practical, and under-
     // tessellation aliases into smooth rolling undulations. Bump has no such limit.
-    const floorBump = loader.load('/textures/huge_floor_black_low.jpg');
+    const floorBump = loader.load(`${import.meta.env.BASE_URL}textures/huge_floor_black_low.jpg`);
     floorBump.wrapS = floorBump.wrapT = THREE.RepeatWrapping;
     floorBump.repeat.set(20, 2);
     const ground = new THREE.Mesh(
@@ -436,7 +436,7 @@ export default class Game {
     // ── Shared materials (created once; house/wall use separate instances so
     //    their texture.repeat settings don't stomp on each other) ──────────
     if (!this._brickMat) {
-      const brickTex = loader.load('/textures/bricks_512.png');
+      const brickTex = loader.load(`${import.meta.env.BASE_URL}textures/bricks_512.png`);
       brickTex.wrapS = brickTex.wrapT = THREE.RepeatWrapping;
       brickTex.colorSpace = THREE.SRGBColorSpace;
       this._brickMat = new THREE.MeshLambertMaterial({ map: brickTex });
@@ -449,7 +449,7 @@ export default class Game {
       this._houseBrickMat = new THREE.MeshLambertMaterial({ map: brickTex });
     }
     if (!this._houseRoofMat) {
-      const tileTex = loader.load('/textures/tiles1.jpg');
+      const tileTex = loader.load(`${import.meta.env.BASE_URL}textures/tiles1.jpg`);
       tileTex.wrapS = tileTex.wrapT = THREE.RepeatWrapping;
       tileTex.colorSpace = THREE.SRGBColorSpace;
       tileTex.repeat.set(4, 3);
@@ -487,7 +487,7 @@ export default class Game {
 
     // ── Garden path (gravel strip, centered) ──
     if (!this._gravelMat) {
-      const gravelTex = loader.load('/textures/gravel1.jpg');
+      const gravelTex = loader.load(`${import.meta.env.BASE_URL}textures/gravel1.jpg`);
       gravelTex.wrapS = gravelTex.wrapT = THREE.RepeatWrapping;
       gravelTex.repeat.set(2, 14);
       this._gravelMat = new THREE.MeshLambertMaterial({ map: gravelTex });
@@ -541,7 +541,7 @@ export default class Game {
     const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.1, 0.12), getMaterial(0x8b5e3c));
     post.position.set(signX, 1.05, -2.5);
     this._decorGroup.add(post);
-    const signTex = new THREE.TextureLoader().load('/textures/tom_sign.png');
+    const signTex = new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}textures/tom_sign.png`);
     signTex.colorSpace = THREE.SRGBColorSpace;
     const signMat = new THREE.MeshLambertMaterial({ map: signTex, transparent: true, alphaTest: 0.1 });
     const signBoard = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.0), signMat);

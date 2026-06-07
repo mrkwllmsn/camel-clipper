@@ -95,7 +95,7 @@ export class Cutscene {
 
   private async _loadCar(loader: GLTFLoader): Promise<void> {
     try {
-      const gltf  = await loader.loadAsync('/models/car.glb');
+      const gltf  = await loader.loadAsync(`${import.meta.env.BASE_URL}models/car.glb`);
       const model = gltf.scene;
       const box   = new THREE.Box3().setFromObject(model);
       const size  = box.getSize(new THREE.Vector3());
@@ -125,7 +125,7 @@ export class Cutscene {
 
   private async _loadCamel(loader: GLTFLoader): Promise<void> {
     try {
-      const gltf  = await loader.loadAsync('/models/camel_standing_decimated.glb');
+      const gltf  = await loader.loadAsync(`${import.meta.env.BASE_URL}models/camel_standing_decimated.glb`);
       const model = gltf.scene;
       const box   = new THREE.Box3().setFromObject(model);
       const size  = box.getSize(new THREE.Vector3());
