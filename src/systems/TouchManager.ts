@@ -6,7 +6,7 @@ import type { InputState } from '../utils/Constants';
  *   • Horizontal DRAG anywhere → analog left/right movement (camel slides).
  *   • Quick TAP                → the "Space" action: snip while playing,
  *                                start / restart / skip-cutscene otherwise.
- *   • Small ⏸ button (top-left) → pause.
+ *   • Small ⏸ button (bottom-left) → pause.
  *
  * Movement is relative to where the finger first landed, so it works as an
  * invisible thumb-stick: push left of the start point to go left, right to go
@@ -69,18 +69,19 @@ export default class TouchManager {
       background: 'transparent',
     });
 
-    // Pause button — bottom-right, clear of the top HUD. A frosted-glass disc
-    // with two clean bars. Hidden until the game enters PLAYING (setPauseVisible).
+    // Pause button — bottom-left, clear of the snip tap zone (which lives on the
+    // right). A small frosted-glass disc with two clean bars. Hidden until the
+    // game enters PLAYING (setPauseVisible).
     this.pauseBtn = document.createElement('div');
     css(this.pauseBtn, {
       position: 'fixed',
-      right:  'calc(env(safe-area-inset-right, 0px) + 16px)',
+      left:   'calc(env(safe-area-inset-left, 0px) + 16px)',
       bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
       display: 'none',
       alignItems: 'center',
       justifyContent: 'center',
-      gap: '5px',
-      width: '48px', height: '48px',
+      gap: '4px',
+      width: '36px', height: '36px',
       borderRadius: '50%',
       background: 'rgba(20,40,15,0.42)',
       border: '2px solid rgba(255,255,255,0.55)',
@@ -94,7 +95,7 @@ export default class TouchManager {
     for (let i = 0; i < 2; i++) {
       const bar = document.createElement('div');
       css(bar, {
-        width: '5px', height: '18px',
+        width: '4px', height: '13px',
         borderRadius: '2px',
         background: 'rgba(255,255,255,0.92)',
       });
