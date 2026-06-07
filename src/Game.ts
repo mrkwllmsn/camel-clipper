@@ -207,7 +207,7 @@ export default class Game {
 
     // Warm ambient + directional sun matching sky sun position
     this.scene.add(new THREE.AmbientLight(0xfff4e0, 1.1));
-    const sun = new THREE.DirectionalLight(0xfffbe8, 1.9);
+    const sun = new THREE.DirectionalLight(0xfffbe8, 2.9);
     sun.position.set(12, 22, 18);
     sun.castShadow            = true;
     sun.shadow.mapSize.set(2048, 2048);
@@ -465,24 +465,30 @@ export default class Game {
     }
     // Wall/roof/window variant pools. Each texture loaded once; a per-level seed
     // selects one so successive cottages differ in brick, tile and glazing.
+    // `gain` normalizes each texture's intrinsic brightness so dark variants
+    // (e.g. slate roofs ~74/255 vs light tiles ~129/255) don't read as near-black
+    // under ACES tone mapping. Diffuse = map × color; three.js allows color > 1.
     const texMat = (
-      file: string, repX: number, repY: number, extra: THREE.MeshLambertMaterialParameters = {},
+      file: string, repX: number, repY: number, gain = 1, extra: THREE.MeshLambertMaterialParameters = {},
     ): THREE.MeshLambertMaterial => {
       const tex = loader.load(`${import.meta.env.BASE_URL}textures/${file}`);
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.repeat.set(repX, repY);
-      return new THREE.MeshLambertMaterial({ map: tex, ...extra });
+      return new THREE.MeshLambertMaterial({ map: tex, color: new THREE.Color(gain, gain, gain), ...extra });
     };
     if (!this._houseBrickMats) {
-      this._houseBrickMats = [
-        'bricks_512.png', 'bricks/bricks3.jpg', 'bricks/bricks4.jpg',
-        'bricks/bricks5.jpg', 'bricks/bricks6.jpg',
-      ].map((f) => texMat(f, 3, 2));
+      // [file, gain] — gains normalize measured mean brightness toward ~150/255.
+      this._houseBrickMats = ([
+        ['bricks_512.png', 0.78], ['bricks/bricks3.jpg', 1.55], ['bricks/bricks4.jpg', 1.18],
+        ['bricks/bricks5.jpg', 1.22], ['bricks/bricks6.jpg', 1.45],
+      ] as [string, number][]).map(([f, g]) => texMat(f, 3, 2, g));
     }
     if (!this._houseRoofMats) {
-      this._houseRoofMats = ['tiles1.jpg', 'tiles2.webp', 'tiles3.jpg']
-        .map((f) => texMat(f, 4, 3, { side: THREE.DoubleSide }));
+      // Gains normalize toward ~125/255 so slate variants aren't near-black.
+      this._houseRoofMats = ([
+        ['tiles1.jpg', 0.97], ['tiles2.webp', 1.62], ['tiles3.jpg', 1.65],
+      ] as [string, number][]).map(([f, g]) => texMat(f, 4, 3, g, { side: THREE.DoubleSide }));
     }
     if (!this._houseWinMats) {
       // Index 0 = default tinted glass (no texture); rest = textured glazing.
@@ -1180,6 +1186,9 @@ export default class Game {
   private _tickEndScreen(dt: number): void {
     this.couple.update(dt);
     this.camel.update(dt);
+    // Ignore input for a beat so space-spam from gameplay can't skip past the
+    // score screen before the player has even seen it.
+    if (this._camT < 1.2) return;
     if (this.input.state.start || this.input.state.launch) {
       this._setState(GAME_STATES.MENU);
     }

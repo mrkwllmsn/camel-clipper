@@ -96,14 +96,20 @@ export interface LevelConfig {
 export function getLevelConfig(level: number): LevelConfig {
   const L = Math.max(1, level) - 1;  // 0-based step
   const count = Math.min(12 + L * 4, 40);
+  // Difficulty keeps climbing past L8 (where count/speed cap out) via a rising
+  // overgrown FRACTION, faster regrowth, and tighter patience — so the run never
+  // plateaus. Spiral drain is normalized to the fraction overgrown (see below).
+  const frac = Math.min(0.5 + L * 0.025, 0.85);   // 50%→85% of board overgrown
   return {
     count,
-    overgrownCount:  Math.min(Math.round(count * 0.5), count - 1),  // fixed 50%, no extra per level
-    regrowDelay:     Math.max(18 - L * 0.6, 10),  // L1=18s, L5=15.6s, floors at 10s
-    regrowDuration:  Math.max(14 - L * 0.6, 8),   // L1=14s, L5=11.6s, floors at 8s
-    patienceSeconds: Math.max(120 - L * 5, 90),   // gentle drop: 120→115→110→105…→90
-    perOvergrown:    0.004 + L * 0.0004,           // tiny per-level bump: 0.004→0.0044→0.0048…
-    camelSpeed:      Math.min(5.0 + L * 1.8, 14),
+    overgrownCount:  Math.min(Math.round(count * frac), count - 1),
+    regrowDelay:     Math.max(18 - L * 0.8, 6),   // L1=18s → floors at 6s (~L15)
+    regrowDuration:  Math.max(14 - L * 0.7, 5),   // L1=14s → floors at 5s
+    patienceSeconds: Math.max(120 - L * 4, 75),   // 120 → floors at 75s (~L11)
+    // overgrownCount*perOvergrown = frac*(0.030 + 0.0015L): independent of board
+    // size, rises with both level and how full the board is (Beer Tapper spiral).
+    perOvergrown:    (0.030 + L * 0.0015) / count,
+    camelSpeed:      Math.min(5.0 + L * 1.6, 13),
   };
 }
 
