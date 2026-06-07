@@ -26,6 +26,8 @@ interface HouseOpts {
   wallMat?: THREE.Material;
   /** Override roof material (e.g. tile texture). Falls back to palette colour. */
   roofMat?: THREE.Material;
+  /** Override window glass material (e.g. window texture). Falls back to tinted glass. */
+  winMat?: THREE.Material;
 }
 
 /**
@@ -113,7 +115,7 @@ export function createLowLodHouse(seed: number, opts: HouseOpts = {}): THREE.Gro
   group.add(door);
 
   // Windows
-  const winMat = new THREE.MeshLambertMaterial({ color: 0x88CCEE, emissive: 0x224433, emissiveIntensity: 0.4 });
+  const winMat = opts.winMat ?? new THREE.MeshLambertMaterial({ color: 0x88CCEE, emissive: 0x224433, emissiveIntensity: 0.4 });
   const frameMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
   // Push windows 0.12 units clear of wall face so no z-fighting occurs.
   const zf = -houseDepth / 2 - 0.12;

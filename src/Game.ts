@@ -57,8 +57,11 @@ export default class Game {
   private _gravelMat?:     THREE.MeshLambertMaterial;
   // Separate material instances for house walls/roof (cloned textures so their
   // repeat settings are independent from the side garden-wall materials).
-  private _houseBrickMat?: THREE.MeshLambertMaterial;
-  private _houseRoofMat?:  THREE.MeshLambertMaterial;
+  // Variant pools: one entry per texture; a per-level seed picks which to use so
+  // each cottage looks different. Built once, reused across rebuilds.
+  private _houseBrickMats?: THREE.MeshLambertMaterial[];
+  private _houseRoofMats?:  THREE.MeshLambertMaterial[];
+  private _houseWinMats?:   THREE.MeshLambertMaterial[];
 
   // Camera animation
   private _camPhase: CamPhase = 'menu';
@@ -460,24 +463,45 @@ export default class Game {
       brickTex.colorSpace = THREE.SRGBColorSpace;
       this._brickMat = new THREE.MeshLambertMaterial({ map: brickTex });
     }
-    if (!this._houseBrickMat) {
-      const brickTex = loader.load(`${import.meta.env.BASE_URL}textures/bricks_512.png`);
-      brickTex.wrapS = brickTex.wrapT = THREE.RepeatWrapping;
-      brickTex.colorSpace = THREE.SRGBColorSpace;
-      brickTex.repeat.set(3, 2);
-      this._houseBrickMat = new THREE.MeshLambertMaterial({ map: brickTex });
+    // Wall/roof/window variant pools. Each texture loaded once; a per-level seed
+    // selects one so successive cottages differ in brick, tile and glazing.
+    const texMat = (
+      file: string, repX: number, repY: number, extra: THREE.MeshLambertMaterialParameters = {},
+    ): THREE.MeshLambertMaterial => {
+      const tex = loader.load(`${import.meta.env.BASE_URL}textures/${file}`);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.repeat.set(repX, repY);
+      return new THREE.MeshLambertMaterial({ map: tex, ...extra });
+    };
+    if (!this._houseBrickMats) {
+      this._houseBrickMats = [
+        'bricks_512.png', 'bricks/bricks3.jpg', 'bricks/bricks4.jpg',
+        'bricks/bricks5.jpg', 'bricks/bricks6.jpg',
+      ].map((f) => texMat(f, 3, 2));
     }
-    if (!this._houseRoofMat) {
-      const tileTex = loader.load(`${import.meta.env.BASE_URL}textures/tiles1.jpg`);
-      tileTex.wrapS = tileTex.wrapT = THREE.RepeatWrapping;
-      tileTex.colorSpace = THREE.SRGBColorSpace;
-      tileTex.repeat.set(4, 3);
-      this._houseRoofMat = new THREE.MeshLambertMaterial({ map: tileTex, side: THREE.DoubleSide });
+    if (!this._houseRoofMats) {
+      this._houseRoofMats = ['tiles1.jpg', 'tiles2.webp', 'tiles3.jpg']
+        .map((f) => texMat(f, 4, 3, { side: THREE.DoubleSide }));
+    }
+    if (!this._houseWinMats) {
+      // Index 0 = default tinted glass (no texture); rest = textured glazing.
+      this._houseWinMats = [
+        new THREE.MeshLambertMaterial({ color: 0x88CCEE, emissive: 0x224433, emissiveIntensity: 0.4 }),
+        texMat('window1.jpg', 1, 1),
+      ];
     }
 
     // ── Procedural house (unique per level, deterministic from level number) ──
+    // Deterministic variant pick per level (distinct salts → independent choices).
+    const pickVariant = <T>(arr: T[], salt: number): T =>
+      arr[Math.abs(Math.imul(this._level + salt, 2654435761)) % arr.length];
     const houseScale = 1.4;
-    const house = createLowLodHouse(this._level, { wallMat: this._houseBrickMat, roofMat: this._houseRoofMat });
+    const house = createLowLodHouse(this._level, {
+      wallMat: pickVariant(this._houseBrickMats, 0x1111),
+      roofMat: pickVariant(this._houseRoofMats, 0x2222),
+      winMat:  pickVariant(this._houseWinMats, 0x3333),
+    });
     house.scale.setScalar(houseScale);
     house.rotation.y = Math.PI; // rotate so front (door/windows) faces the camera
     house.position.set(0, 0, -10);
