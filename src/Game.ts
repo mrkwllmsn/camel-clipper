@@ -1,0 +1,1164 @@
+import * as THREE from 'three';
+import { Sky } from 'three/examples/jsm/objects/Sky.js';
+import { GAME_CONFIG, GAME_STATES, COLORS, getMaterial, getLevelConfig, type GameCallbacks } from './utils/Constants';
+import { Hedge } from './entities/Hedge';
+import { Camel } from './entities/Camel';
+import { OldCouple } from './entities/OldCouple';
+import { LeafParticles } from './systems/LeafParticles';
+import { makeGnome, makeBench, makeBirdbath, makeWheelbarrow, makeShrub, makeFlowerbed, makeScatterFlower, buildTreeInstances } from './entities/Decor';
+import { createLowLodHouse } from './utils/HouseGenerator';
+import InputManager from './systems/InputManager';
+import GamepadManager from './systems/GamepadManager';
+import TouchManager from './systems/TouchManager';
+import { OutlinePass } from './systems/OutlinePass';
+import { Cutscene, CS_BEATS, ROAD_Z } from './entities/Cutscene';
+
+type CamPhase = 'menu' | 'pan-in' | 'playing' | 'admire' | 'cutscene' | 'win' | 'gameover';
+
+export default class Game {
+  private canvas:    HTMLCanvasElement;
+  private callbacks: GameCallbacks;
+
+  private state:    string;
+  private patience: number;
+  private _trimmed: number;
+  private _level:   number;
+  private _score:         number = 0;
+  private _hiScore:       number = 0;
+  private _highestLevel:  number = 0;
+
+  // Per-level play bounds + tuning, recomputed in _startLevel().
+  private _camelMinX = -7.5;
+  private _camelMaxX =  7.5;
+  private _camBoundX = 0;     // how far the camera may scroll from center (±)
+  private _camFollowX = 0;    // eased camera X during gameplay
+  private _patienceSeconds: number = GAME_CONFIG.PATIENCE_BASE_SECONDS;
+  private _perOvergrown:    number = GAME_CONFIG.PATIENCE_PER_OVERGROWN;
+  private _camelSpeed:      number = GAME_CONFIG.CAMEL.SPEED;
+
+  private _accum:       number;
+  private _lastTime:    number;
+  private _loopRunning: boolean;
+  private _rafId:       number;
+  private _t:           number;
+
+  private renderer!: THREE.WebGLRenderer;
+  private scene!:    THREE.Scene;
+  private camera!:   THREE.PerspectiveCamera;
+  private _outline!: OutlinePass;
+
+  private _clouds: Array<{ obj: THREE.Object3D; speed: number }> = [];
+
+  // Width-dependent scenery rebuilt every level; textured materials are created
+  // once and reused so rebuilds don't leak GPU textures.
+  private _decorGroup = new THREE.Group();
+  private _brickMat?:      THREE.MeshLambertMaterial;
+  private _gravelMat?:     THREE.MeshLambertMaterial;
+  // Separate material instances for house walls/roof (cloned textures so their
+  // repeat settings are independent from the side garden-wall materials).
+  private _houseBrickMat?: THREE.MeshLambertMaterial;
+  private _houseRoofMat?:  THREE.MeshLambertMaterial;
+
+  // Camera animation
+  private _camPhase: CamPhase = 'menu';
+  private _camT = 0;
+
+  // Cutscene between levels
+  private _cutscene:          Cutscene | null = null;
+  private _csFollowX          = 0;      // eased camera X during travel shots
+  private _csRoadStartX       = 8;      // where the road begins (right of hedge)
+  private _nextCutsceneLevel  = 1;
+  private _csLevelBuilt       = false;
+  private _csPrevPhase        = '';     // phase-transition detection
+  private _csSettlePos        = new THREE.Vector3();
+  private _csSettleLook       = new THREE.Vector3();
+  private _debugKeyHandler:   ((e: KeyboardEvent) => void) | null = null;
+
+  // Level-clear "admire your work" interlude: gameplay pauses, the camera sweeps
+  // the pristine hedge then pulls back to a hero shot, before the next level.
+  private _admiring   = false;
+  private _admireT    = 0;
+  private _admireDur  = 5.0;
+  private _admireHalfWidth = 0;
+  private _nextLevel  = 0;
+  private _camPosA    = new THREE.Vector3();
+  private _camPosB    = new THREE.Vector3();
+  private _camLookA   = new THREE.Vector3();
+  private _camLookB   = new THREE.Vector3();
+  private _camLookTgt = new THREE.Vector3(0, 2.0, 0);
+
+  private input:   InputManager;
+  private gamepad: GamepadManager;
+  private touch:   TouchManager;
+
+  private hedge!:  Hedge;
+  private camel!:  Camel;
+  private couple!: OldCouple;
+  private leaves!: LeafParticles;
+
+  private _snipOffset   = -1.5;
+  private _aimX         = 0;
+  private _aimSnippable = false;
+  private _aimDot!:   THREE.Mesh;
+
+  constructor(canvas: HTMLCanvasElement, callbacks: GameCallbacks = {}) {
+    this.canvas    = canvas;
+    this.callbacks = callbacks;
+
+    this.state    = GAME_STATES.MENU;
+    this.patience = 1;
+    this._trimmed = 0;
+    this._level   = 1;
+    this._hiScore      = parseInt(localStorage.getItem('camelClipper_hiScore') || '0', 10);
+    this._highestLevel = parseInt(localStorage.getItem('camelClipper_highestLevel') || '0', 10);
+    this._accum       = 0;
+    this._lastTime    = 0;
+    this._loopRunning = false;
+    this._rafId       = 0;
+    this._t           = 0;
+
+    this.input   = new InputManager();
+    this.gamepad = new GamepadManager();
+    this.touch   = new TouchManager(document.body);
+
+    this._initRenderer();
+    this._initScene();
+    this._initEntities();
+
+    // Debug: press 1 to preview the cutscene from any state
+    this._debugKeyHandler = (e: KeyboardEvent) => {
+      if (e.key === '1' && this.state !== GAME_STATES.CUTSCENE) {
+        if (this._cutscene) { this.scene.remove(this._cutscene.group); this._cutscene.dispose(); this._cutscene = null; }
+        this._beginCutscene(this._level + 1);
+      }
+    };
+    window.addEventListener('keydown', this._debugKeyHandler);
+
+    setTimeout(() => this.callbacks.onHighScore?.(this._hiScore, this._highestLevel), 0);
+  }
+
+  private _letterboxSize(): { w: number; h: number } {
+    const TARGET = 16 / 9;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (vw / vh > TARGET) {
+      const h = vh; return { w: Math.round(h * TARGET), h };
+    } else {
+      const w = vw; return { w, h: Math.round(w / TARGET) };
+    }
+  }
+
+  private _initRenderer(): void {
+    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    const { w, h } = this._letterboxSize();
+    this.renderer.setSize(w, h);
+    this.renderer.outputColorSpace    = THREE.SRGBColorSpace;
+    this.renderer.toneMapping         = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 0.72;
+    this.renderer.shadowMap.enabled   = true;
+    this.renderer.shadowMap.type      = THREE.PCFSoftShadowMap;
+    window.addEventListener('resize', () => this._onResize());
+    this._outline = new OutlinePass(this.renderer, 0.1, 300);
+  }
+
+  private _initScene(): void {
+    this.scene = new THREE.Scene();
+    // Fog colour matches sky horizon — warm hazy blue
+    this.scene.fog = new THREE.FogExp2(0xc4d8e8, 0.013);
+
+    this.camera = new THREE.PerspectiveCamera(55, 16 / 9, 0.1, 300);
+    this.camera.position.set(0, 3.5, 12);
+    this.camera.lookAt(0, 2.0, 0);
+
+    // Procedural sky
+    const sky = new Sky();
+    sky.scale.setScalar(10000);
+    this.scene.add(sky);
+    const skyU = (sky.material as THREE.ShaderMaterial).uniforms;
+    skyU['turbidity'].value       = 2.5;
+    skyU['rayleigh'].value        = 1.6;
+    skyU['mieCoefficient'].value  = 0.004;
+    skyU['mieDirectionalG'].value = 0.85;
+    // English afternoon sun — high and slightly off to the side
+    const sunDir = new THREE.Vector3(12, 22, 18).normalize();
+    skyU['sunPosition'].value.copy(sunDir);
+
+    // Warm ambient + directional sun matching sky sun position
+    this.scene.add(new THREE.AmbientLight(0xfff4e0, 1.1));
+    const sun = new THREE.DirectionalLight(0xfffbe8, 1.9);
+    sun.position.set(12, 22, 18);
+    sun.castShadow            = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near    = 0.5;
+    sun.shadow.camera.far     = 80;
+    sun.shadow.camera.left    = -22;
+    sun.shadow.camera.right   = 22;
+    sun.shadow.camera.top     = 16;
+    sun.shadow.camera.bottom  = -6;
+    sun.shadow.bias           = -0.001;
+    this.scene.add(sun);
+
+    const loader = new THREE.TextureLoader();
+
+    // Grass lawn — the main ground, covering everything.
+    const grassTex = loader.load('/textures/grass1.jpg');
+    grassTex.wrapS = grassTex.wrapT = THREE.RepeatWrapping;
+    grassTex.repeat.set(40, 20);
+    const grass = new THREE.Mesh(
+      new THREE.PlaneGeometry(120, 60),
+      new THREE.MeshStandardMaterial({
+        map: grassTex,
+        roughness: 1.0,
+        metalness: 0.0,
+      }),
+    );
+    grass.rotation.x = -Math.PI / 2;
+    grass.receiveShadow = true;
+    this.scene.add(grass);
+
+    // Stone patio — a strip in front of the hedge where the camel works.
+    // Much smaller than the lawn so most of the ground reads as grass.
+    const floorTex = loader.load('/textures/huge_floor_1.jpg');
+    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
+    floorTex.repeat.set(20, 2);
+    // Height map for relief: stones are white (high), mortar black (low).
+    // Use as a bumpMap (per-pixel normal shading) instead of a displacementMap —
+    // displacement needs more verts per stone than is practical, and under-
+    // tessellation aliases into smooth rolling undulations. Bump has no such limit.
+    const floorBump = loader.load('/textures/huge_floor_black_low.jpg');
+    floorBump.wrapS = floorBump.wrapT = THREE.RepeatWrapping;
+    floorBump.repeat.set(20, 2);
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(120, 8),
+      new THREE.MeshStandardMaterial({
+        map: floorTex,
+        bumpMap: floorBump,
+        bumpScale: 2.5,
+        roughness: 0.9,
+        metalness: 0.0,
+      }),
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(0, 0.01, 1.5); // lifted to avoid z-fighting with grass
+    ground.receiveShadow = true;
+    this.scene.add(ground);
+
+    this.scene.add(this._decorGroup);
+    this._buildStaticScenery();
+    this._buildPermanentRoad();
+    this._buildClouds();
+  }
+
+  private _buildPermanentRoad(): void {
+    const roadLen = 600;
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(roadLen, 7),
+      new THREE.MeshLambertMaterial({ color: 0x484848 }),
+    );
+    road.rotation.x = -Math.PI / 2;
+    road.position.set(0, 0.013, ROAD_Z);
+    road.receiveShadow = true;
+    this.scene.add(road);
+
+    const dashMat  = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    const dashCount = Math.floor(roadLen / 4.2);
+    for (let i = 0; i < dashCount; i++) {
+      const d = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 0.13), dashMat);
+      d.rotation.x = -Math.PI / 2;
+      d.position.set(-roadLen / 2 + i * 4.2 + 2.1, 0.017, ROAD_Z);
+      this.scene.add(d);
+    }
+
+    const kerbMat = new THREE.MeshLambertMaterial({ color: 0xbbbbbb });
+    for (const dz of [-3.6, 3.6]) {
+      const k = new THREE.Mesh(new THREE.BoxGeometry(roadLen, 0.12, 0.28), kerbMat);
+      k.position.set(0, 0.06, ROAD_Z + dz);
+      this.scene.add(k);
+    }
+  }
+
+  // Far-distance scenery that never changes with hedge length.
+  private _buildStaticScenery(): void {
+    // ── Instanced trees: 2 draw calls for all N trees ──────────────────────
+    // Left cluster (beside/behind cottage), right cluster, centre back, far BG row.
+    // ── Sheffield rolling hills — 6 ridges at staggered depths ────────────
+    // [x, z, rx, ry, rz, color]  — low-segment sphere, no shadows, eaten by fog
+    const hillData: Array<[number, number, number, number, number, number]> = [
+      [-35, -52, 22, 7.5, 14, 0x3a7a2a],  // Loxley ridge
+      [-55, -42, 24, 7.0, 13, 0x3c8030],  // Rivelin valley wall
+      [-72, -58, 26, 8.5, 16, 0x367828],  // Bradfield moors (plugs far-left edge)
+      [-10, -44, 15, 5.5, 10, 0x427832],  // Meersbrook (left-centre)
+      [  8, -60, 26, 9.5, 16, 0x367828],  // Ecclesall woods (centre)
+      [ 30, -48, 18, 6.5, 11, 0x3e7c2e],  // Gleadless (right-centre)
+      [ 52, -55, 20, 7.0, 13, 0x3a7a2a],  // Woodhouse (far right)
+      [  0, -80, 50,12.0, 22, 0x2e6020],  // deep backdrop ridge
+      // Front-side hills (+Z) — visible during the drive cutscene and gameplay
+      [ -20,  80,  24, 8.0, 16, 0x367828],
+      [  12,  90,  28, 9.5, 20, 0x2e6020],
+      [  48,  78,  22, 7.5, 15, 0x3a7a2a],
+      [  76,  85,  20, 8.0, 16, 0x3c8030],
+      // Right-side extension (+X) — fills horizon during depart
+      [  78, -44,  22, 7.5, 14, 0x3c8030],
+      [  98, -58,  24, 8.0, 16, 0x367828],
+      [ 115, -50,  20, 7.0, 13, 0x3a7a2a],
+      // Deep front backdrop ridge
+      [  28, 130,  75,14.0, 32, 0x2a5a1e],
+    ];
+    for (const [x, z, rx, ry, rz, col] of hillData) {
+      const hill = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 6), getMaterial(col));
+      hill.scale.set(rx, ry, rz);
+      hill.position.set(x, ry * 0.4 - 0.5, z);
+      this.scene.add(hill);
+    }
+
+    // ── Extended ground — covers z > +30 where main grass plane ends ─────────
+    const extGround = new THREE.Mesh(
+      new THREE.PlaneGeometry(500, 400),
+      getMaterial(0x548030),
+    );
+    extGround.rotation.x = -Math.PI / 2;
+    extGround.position.set(20, -0.04, 70);
+    this.scene.add(extGround);
+
+    // ── Scattered trees on extended ground ────────────────────────────────────
+    const frontTrees: Array<{x: number; z: number; s: number}> = [
+      { x:  18, z: 22, s: 1.3 }, { x:  30, z: 30, s: 1.5 }, { x:  46, z: 24, s: 1.1 },
+      { x:  60, z: 38, s: 1.6 }, { x:  72, z: 20, s: 1.2 }, { x:  82, z: 42, s: 1.7 },
+      { x: -12, z: 28, s: 1.2 }, { x: -28, z: 36, s: 1.4 }, { x: -40, z: 22, s: 1.0 },
+      { x:  25, z: 50, s: 1.8 }, { x:  55, z: 55, s: 2.0 }, { x: -10, z: 48, s: 1.6 },
+      { x:  88, z: -18, s: 1.4 }, { x: 100, z: -38, s: 1.6 },
+    ];
+    const ftLeafColors = [0x2d6e22, 0x3a7a2a, 0x2a6020, 0x4a8a30, 0x3d7825];
+    for (let i = 0; i < frontTrees.length; i++) {
+      const { x, z, s } = frontTrees[i];
+      const g = new THREE.Group();
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.2, 1.8, 6), getMaterial(0x5c3a1a));
+      trunk.position.y = 0.9;
+      g.add(trunk);
+      const leaves = new THREE.Mesh(new THREE.SphereGeometry(1.1, 7, 5), getMaterial(ftLeafColors[i % ftLeafColors.length]));
+      leaves.scale.set(1, 1.25, 1);
+      leaves.position.y = 2.5;
+      g.add(leaves);
+      g.scale.setScalar(s);
+      g.position.set(x, 0, z);
+      this.scene.add(g);
+    }
+
+    // ── Instanced trees — ground clusters + hill-top scatter, 2 draw calls ──
+    // Hill trees use y= to sit on the hill surface (≈ hill_cy + ry*0.9).
+    const treePositions: Array<{x: number; z: number; s?: number; y?: number}> = [
+      // Left side cluster
+      { x: -10, z: -5,  s: 1.15 },
+      { x: -12, z: -8,  s: 1.30 },
+      { x: -14, z: -5.5,s: 1.05 },
+      { x: -16, z: -10, s: 1.40 },
+      { x:  -9, z: -12, s: 0.95 },
+      // Right side cluster
+      { x:  10, z: -5,  s: 1.10 },
+      { x:  12, z: -8,  s: 1.25 },
+      { x:  14, z: -5.5,s: 1.00 },
+      { x:  16, z: -10, s: 1.35 },
+      { x:   9, z: -12, s: 0.90 },
+      // Behind cottage, centre
+      { x:  -5, z: -10, s: 1.20 },
+      { x:   2, z: -13, s: 1.50 },
+      { x:   6, z: -9,  s: 1.10 },
+      { x: -18, z: -14, s: 1.60 },
+      { x:  18, z: -14, s: 1.55 },
+      // Far background tree line
+      { x: -25, z: -20, s: 1.80 },
+      { x: -18, z: -22, s: 1.90 },
+      { x:  -8, z: -24, s: 2.00 },
+      { x:   4, z: -23, s: 1.85 },
+      { x:  15, z: -21, s: 1.75 },
+      { x:  24, z: -19, s: 1.65 },
+      { x: -32, z: -18, s: 1.70 },
+      { x:  30, z: -17, s: 1.60 },
+      // Extra depth
+      { x: -40, z: -26, s: 2.20 },
+      { x:  38, z: -25, s: 2.10 },
+      // Mid-distance left — mask the new hill edges
+      { x: -60, z: -28, s: 2.50, y: -2 },
+      { x: -70, z: -30, s: 2.60, y: -2 },
+      { x: -80, z: -28, s: 2.80, y: -2 },
+      { x: -90, z: -33, s: 3.00, y: -2 },
+      // Rivelin hill trees (hill_cy≈2.3, hry=7.0, top≈8.6)
+      { x: -58, z: -42, s: 1.7, y: 7.8 },
+      { x: -52, z: -43, s: 1.5, y: 7.5 },
+      { x: -55, z: -46, s: 1.8, y: 7.0 },
+      // Bradfield moors trees (hill_cy≈2.9, hry=8.5, top≈10.55)
+      { x: -74, z: -58, s: 2.0, y: 9.8 },
+      { x: -68, z: -57, s: 1.8, y: 9.5 },
+      { x: -72, z: -61, s: 2.2, y: 9.0 },
+      // Loxley hill trees (hill_cy≈2.5, hry=7.5, top≈9.25)
+      { x: -38, z: -52, s: 1.8, y: 8.5 },
+      { x: -32, z: -51, s: 1.6, y: 8.8 },
+      { x: -35, z: -55, s: 2.0, y: 8.0 },
+      // Meersbrook hill trees (hill_cy≈1.7, hry=5.5, top≈6.65)
+      { x: -13, z: -44, s: 1.4, y: 6.0 },
+      { x:  -7, z: -45, s: 1.3, y: 6.2 },
+      // Ecclesall hill trees (hill_cy≈3.3, hry=9.5, top≈11.85)
+      { x:   5, z: -60, s: 2.3, y: 10.8 },
+      { x:  11, z: -59, s: 2.1, y: 10.5 },
+      { x:   8, z: -63, s: 2.5, y:  9.8 },
+      // Gleadless hill trees (hill_cy≈2.1, hry=6.5, top≈7.95)
+      { x:  28, z: -48, s: 1.5, y: 7.2 },
+      { x:  33, z: -49, s: 1.4, y: 7.0 },
+      // Woodhouse hill trees (hill_cy≈2.3, hry=7.0, top≈8.6)
+      { x:  50, z: -55, s: 1.7, y: 7.8 },
+      { x:  55, z: -54, s: 1.6, y: 7.5 },
+      // Deep backdrop ridge trees (hill_cy≈4.3, hry=12, top≈15.1)
+      { x: -20, z: -80, s: 3.0, y: 13.0 },
+      { x:  -5, z: -81, s: 3.2, y: 14.0 },
+      { x:  12, z: -79, s: 2.9, y: 13.5 },
+      { x:  28, z: -80, s: 2.8, y: 12.5 },
+    ];
+
+    const [trunks, foliage] = buildTreeInstances(treePositions);
+    this.scene.add(trunks, foliage);
+  }
+
+  // Cottage + garden dressing sized to the current hedge width. Cleared and
+  // rebuilt each level; per-rebuild geometry is disposed, textured materials are
+  // created once (lazily) and reused, getMaterial() colours are cache-shared.
+  private _buildLevelScenery(halfWidth: number): void {
+    // Tear down the previous level's scenery, freeing its geometry.
+    for (const child of this._decorGroup.children) {
+      child.traverse((o) => {
+        if (o instanceof THREE.Mesh) o.geometry.dispose();
+      });
+    }
+    this._decorGroup.clear();
+
+    const loader = new THREE.TextureLoader();
+    const wallW  = Math.max(22, halfWidth * 2 + 8);
+
+    // ── Shared materials (created once; house/wall use separate instances so
+    //    their texture.repeat settings don't stomp on each other) ──────────
+    if (!this._brickMat) {
+      const brickTex = loader.load('/textures/bricks_512.png');
+      brickTex.wrapS = brickTex.wrapT = THREE.RepeatWrapping;
+      brickTex.colorSpace = THREE.SRGBColorSpace;
+      this._brickMat = new THREE.MeshLambertMaterial({ map: brickTex });
+    }
+    if (!this._houseBrickMat) {
+      const brickTex = (this._brickMat.map as THREE.Texture).clone();
+      brickTex.wrapS = brickTex.wrapT = THREE.RepeatWrapping;
+      brickTex.repeat.set(3, 2);
+      brickTex.needsUpdate = true;
+      this._houseBrickMat = new THREE.MeshLambertMaterial({ map: brickTex });
+    }
+    if (!this._houseRoofMat) {
+      const tileTex = loader.load('/textures/tiles1.jpg');
+      tileTex.wrapS = tileTex.wrapT = THREE.RepeatWrapping;
+      tileTex.colorSpace = THREE.SRGBColorSpace;
+      tileTex.repeat.set(4, 3);
+      this._houseRoofMat = new THREE.MeshLambertMaterial({ map: tileTex, side: THREE.DoubleSide });
+    }
+
+    // ── Procedural house (unique per level, deterministic from level number) ──
+    const houseScale = 1.4;
+    const house = createLowLodHouse(this._level, { wallMat: this._houseBrickMat, roofMat: this._houseRoofMat });
+    house.scale.setScalar(houseScale);
+    house.rotation.y = Math.PI; // rotate so front (door/windows) faces the camera
+    house.position.set(0, 0, -10);
+    house.traverse((o) => {
+      if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
+    });
+    this._decorGroup.add(house);
+
+    // ── Low brick garden wall flanking the house on wide levels ──────────
+    const wallH = 1.8;
+    // Generous half-width covering house + possible garage at this scale
+    const houseHalfX = 5.5 * houseScale;
+    const sideWallW = Math.max(0, wallW / 2 - houseHalfX);
+    if (sideWallW > 0.5) {
+      (this._brickMat.map as THREE.Texture).repeat.set(Math.max(1, Math.round(sideWallW / 1.4)), 1);
+      for (const sx of [-1, 1]) {
+        const sideWall = new THREE.Mesh(
+          new THREE.BoxGeometry(sideWallW, wallH, 0.45),
+          this._brickMat,
+        );
+        sideWall.position.set(sx * (houseHalfX + sideWallW / 2), wallH / 2, -7);
+        sideWall.receiveShadow = true;
+        this._decorGroup.add(sideWall);
+      }
+    }
+
+    // ── Garden path (gravel strip, centered) ──
+    if (!this._gravelMat) {
+      const gravelTex = loader.load('/textures/gravel1.jpg');
+      gravelTex.wrapS = gravelTex.wrapT = THREE.RepeatWrapping;
+      gravelTex.repeat.set(2, 14);
+      this._gravelMat = new THREE.MeshLambertMaterial({ map: gravelTex });
+    }
+    const path = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 20), this._gravelMat);
+    path.rotation.x = -Math.PI / 2;
+    path.position.set(0, 0.006, 5);
+    path.receiveShadow = true;
+    this._decorGroup.add(path);
+
+    // ── Flowers on the grass (cobble ends at z=5.5; grass beyond that) ──
+    const flowerColors = [0xe74c3c, 0x9b59b6, 0xf39c12, 0xec407a, 0xf5f5dc, 0x3498db, 0xff6b35, 0xd4a0e0];
+    const flowerCount = Math.max(16, Math.round(halfWidth * 2 + 6));
+    for (let i = 0; i < flowerCount; i++) {
+      const fc = flowerColors[i % flowerColors.length];
+      const fx = -(halfWidth + 4) + Math.random() * (halfWidth + 4) * 2;
+      const fz = 1.5 + Math.random() * 5.0;
+      const flower = makeScatterFlower(fc);
+      flower.position.set(fx, 0, fz);
+      this._decorGroup.add(flower);
+    }
+
+    // ── A few flowers near the side tree clusters ──
+    const treePatch = [
+      { x: -10, z: -5 }, { x: -13, z: -7 }, { x: -11, z: -9 },
+      {  x: 10, z: -5 }, {  x: 13, z: -7 }, {  x: 11, z: -9 },
+      { x: -15, z: -6 }, {  x: 15, z: -6 },
+    ];
+    for (let i = 0; i < treePatch.length; i++) {
+      const fc = flowerColors[i % flowerColors.length];
+      const fx = treePatch[i].x + (Math.random() - 0.5) * 2.5;
+      const fz = treePatch[i].z + (Math.random() - 0.5) * 2.0;
+      const flower = makeScatterFlower(fc);
+      flower.position.set(fx, 0, fz);
+      this._decorGroup.add(flower);
+    }
+
+    // Shrubs tucked behind the cottage wall to soften the wall-meets-ground edge.
+    const backShrubCount = Math.max(8, Math.round(halfWidth * 1.0));
+    for (let i = 0; i < backShrubCount; i++) {
+      const shrub = makeShrub();
+      const bx = -halfWidth + (i / (backShrubCount - 1)) * halfWidth * 2;
+      const bz = -4.4 - Math.random() * 1.2;
+      shrub.position.set(bx, 0, bz);
+      shrub.scale.setScalar(0.7 + Math.random() * 0.5);
+      this._decorGroup.add(shrub);
+    }
+
+    // Tom's Garden Care sign at the right end
+    const signX = halfWidth + 3.5;
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.1, 0.12), getMaterial(0x8b5e3c));
+    post.position.set(signX, 1.05, -2.5);
+    this._decorGroup.add(post);
+    const signTex = new THREE.TextureLoader().load('/textures/tom_sign.png');
+    signTex.colorSpace = THREE.SRGBColorSpace;
+    const signMat = new THREE.MeshLambertMaterial({ map: signTex, transparent: true, alphaTest: 0.1 });
+    const signBoard = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.0), signMat);
+    signBoard.position.set(signX, 2.6, -2.5);
+    this._decorGroup.add(signBoard);
+
+    this._scatterDecor(halfWidth);
+  }
+
+  // Hero props + cheap scatter sprinkled along the play width so a long garden
+  // doesn't feel empty as the camera scrolls.
+  private _scatterDecor(halfWidth: number): void {
+    const heroes = [makeBench(), makeBirdbath(), makeWheelbarrow(), makeGnome(), makeGnome()];
+    for (let i = 0; i < heroes.length; i++) {
+      const h = heroes[i];
+      // Even-ish spread across the width, alternating front/back of the path.
+      const x = -halfWidth + ((i + 0.5) / heroes.length) * (halfWidth * 2);
+      const z = (i % 2 === 0) ? -1.4 : 2.4;
+      h.position.set(x, 0, z);
+      h.rotation.y = (i % 2 === 0) ? 0 : Math.PI;
+      this._decorGroup.add(h);
+    }
+
+    // Low scatter (shrubs + flowerbeds) filling gaps in front of the wall.
+    const scatterCount = Math.round(halfWidth * 1.2);
+    for (let i = 0; i < scatterCount; i++) {
+      const piece = (i % 3 === 0) ? makeFlowerbed() : makeShrub();
+      const x = -halfWidth - 0.5 + Math.random() * (halfWidth * 2 + 1);
+      const z = -2.6 - Math.random() * 0.8;
+      piece.position.set(x, 0, z);
+      this._decorGroup.add(piece);
+    }
+  }
+
+  private _buildClouds(): void {
+    const cloudMat = new THREE.MeshLambertMaterial({ color: 0xf8f8ff, transparent: true, opacity: 0.92 });
+
+    // Each cloud is a cluster of overlapping spheres — rounder, better with outline shader.
+    // Puff layout: [dx, dy, dz, radius] relative to cloud origin.
+    const cloudDefs: Array<{ x: number; y: number; z: number; scale: number; speed: number;
+                              puffs: Array<[number, number, number, number]> }> = [
+      {
+        x: -18, y: 22, z: -35, scale: 1.0, speed: 0.30,
+        puffs: [[0,0,0,2.4], [2.8,0.4,0,1.8], [-2.6,0.2,0,1.9], [1.0,1.6,0,1.6], [-1.0,1.4,0,1.4]],
+      },
+      {
+        x:   6, y: 26, z: -48, scale: 1.4, speed: 0.18,
+        puffs: [[0,0,0,2.8], [3.2,0.6,0,2.0], [-3.0,0.4,0,2.2], [-1.2,1.8,0,1.8], [1.4,2.0,0,2.0], [0,2.8,0,1.4]],
+      },
+      {
+        x:  22, y: 20, z: -30, scale: 0.85, speed: 0.42,
+        puffs: [[0,0,0,2.0], [2.4,0.3,0,1.5], [-2.2,0.2,0,1.6], [0.8,1.4,0,1.3]],
+      },
+      {
+        x: -36, y: 24, z: -50, scale: 1.2, speed: 0.22,
+        puffs: [[0,0,0,2.6], [3.0,0.5,0,2.0], [-2.8,0.3,0,1.8], [1.2,1.9,0,1.7], [-1.0,1.7,0,1.5]],
+      },
+      {
+        x:  38, y: 19, z: -38, scale: 0.9, speed: 0.35,
+        puffs: [[0,0,0,2.1], [2.6,0.4,0,1.6], [-2.4,0.2,0,1.7], [0.6,1.5,0,1.4]],
+      },
+      {
+        x:  -4, y: 30, z: -60, scale: 1.6, speed: 0.14,
+        puffs: [[0,0,0,3.2], [3.8,0.7,0,2.4], [-3.6,0.5,0,2.6], [-1.4,2.2,0,2.0], [1.6,2.4,0,2.2], [0,3.4,0,1.8]],
+      },
+    ];
+
+    for (const def of cloudDefs) {
+      const group = new THREE.Group();
+      group.position.set(def.x, def.y, def.z);
+      group.scale.setScalar(def.scale);
+
+      for (const [dx, dy, dz, r] of def.puffs) {
+        const sphere = new THREE.Mesh(new THREE.SphereGeometry(r, 8, 6), cloudMat);
+        sphere.position.set(dx, dy, dz);
+        group.add(sphere);
+      }
+
+      this.scene.add(group);
+      this._clouds.push({ obj: group, speed: def.speed });
+    }
+  }
+
+  private _initEntities(): void {
+    this.hedge  = new Hedge(getLevelConfig(1));
+    this.scene.add(this.hedge.group);
+    this._buildLevelScenery(this.hedge.halfWidth);
+
+    this.camel = new Camel();
+    this.scene.add(this.camel.group);
+
+    this.couple = new OldCouple();
+    this.scene.add(this.couple.group);
+
+    this.leaves = new LeafParticles();
+    this.scene.add(this.leaves.group);
+
+    // Debug aim dot — bright sphere showing the snip query point on the hedge
+    this._aimDot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.12, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xff2200, depthTest: false }),
+    );
+    this._aimDot.renderOrder = 999;
+    this._aimDot.visible = false;
+    this.scene.add(this._aimDot);
+  }
+
+  setSnipOffset(v: number): void {
+    this._snipOffset = v;
+  }
+
+  private _onResize(): void {
+    const { w, h } = this._letterboxSize();
+    this.renderer.setSize(w, h);
+    this.camera.aspect = 16 / 9;
+    this.camera.updateProjectionMatrix();
+    this._outline.resize(w, h);
+  }
+
+  start(): void {
+    this._lastTime = performance.now() / 1000;
+    if (!this._loopRunning) {
+      this._loopRunning = true;
+      this._rafId = requestAnimationFrame((t) => this._loop(t));
+    }
+    this._setState(GAME_STATES.MENU);
+  }
+
+  destroy(): void {
+    cancelAnimationFrame(this._rafId);
+    this._loopRunning = false;
+    if (this._debugKeyHandler) window.removeEventListener('keydown', this._debugKeyHandler);
+    this._outline.dispose();
+    this.renderer.dispose();
+  }
+
+  private _loop(nowMs: number): void {
+    const now = nowMs / 1000;
+    let dt = now - this._lastTime;
+    this._lastTime = now;
+    if (dt > 0.25) dt = 0.25;
+
+    this._accum += dt;
+    const step = GAME_CONFIG.TIMESTEP;
+    while (this._accum >= step) {
+      this._fixedUpdate(step);
+      this._accum -= step;
+    }
+
+    this._renderUpdate(dt);
+    this._outline.render(this.scene, this.camera);
+
+    if (this.callbacks.onCoupleScreenPos) {
+      const ndc = this.couple.headWorld.clone().project(this.camera);
+      this.callbacks.onCoupleScreenPos(
+        (ndc.x * 0.5 + 0.5) * 100,
+        (-ndc.y * 0.5 + 0.5) * 100,
+      );
+    }
+
+    if (this.callbacks.onAimScreenPos && this.state === 'PLAYING' && !this._admiring && this._camPhase === 'playing') {
+      const aimWorld = new THREE.Vector3(this._aimX, GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN + 0.15, 0);
+      const ndc = aimWorld.project(this.camera);
+      this.callbacks.onAimScreenPos(
+        (ndc.x * 0.5 + 0.5) * 100,
+        (-ndc.y * 0.5 + 0.5) * 100,
+        this._aimSnippable,
+      );
+    }
+
+    this._rafId = requestAnimationFrame((t) => this._loop(t));
+  }
+
+  // Smooth per-frame updates (camera, clouds) — NOT fixed-step
+  private _renderUpdate(dt: number): void {
+    this._camT += dt;
+    if (this._cutscene) this._cutscene.update(dt);
+
+    // Drift clouds eastward, wrap around
+    for (const c of this._clouds) {
+      c.obj.position.x += c.speed * dt;
+      if (c.obj.position.x > 50) c.obj.position.x = -50;
+    }
+
+    const ss = (t: number) => t * t * (3 - 2 * t); // smoothstep easing
+
+    if (this._camPhase === 'menu') {
+      // Gentle wide survey drift — shows off the whole garden
+      const t = this._camT;
+      this.camera.position.set(
+        Math.sin(t * 0.27) * 2.8,
+        3.5 + Math.sin(t * 0.18) * 0.35,
+        12.0 + Math.cos(t * 0.22) * 0.9,
+      );
+      this.camera.lookAt(0, 2.0, 0);
+
+    } else if (this._camPhase === 'pan-in') {
+      // Cinematic sweep from close side angle to gameplay position
+      const PAN_DUR = 2.2;
+      const p = Math.min(this._camT / PAN_DUR, 1);
+      const e = ss(p);
+      this._camPosA.set(-7, 1.6, 8);
+      this._camPosB.set(0, 3.5, 12);
+      this._camLookA.set(0, 3.0, 0);
+      this._camLookB.set(0, 2.0, 0);
+      this.camera.position.lerpVectors(this._camPosA, this._camPosB, e);
+      this._camLookTgt.lerpVectors(this._camLookA, this._camLookB, e);
+      this.camera.lookAt(this._camLookTgt);
+      if (p >= 1) {
+        this._camPhase = 'playing';
+        this._camT = 0;
+      }
+
+    } else if (this._camPhase === 'playing') {
+      // Follow Tom along X with easing + lookahead, clamped to the level bounds.
+      const cam = GAME_CONFIG.CAMERA;
+      const dir = Math.sign(this.input.state.moveX);
+      const tgt = Math.max(-this._camBoundX, Math.min(this._camBoundX,
+        this.camel.x + dir * cam.LOOKAHEAD));
+      this._camFollowX += (tgt - this._camFollowX) * Math.min(1, dt * cam.FOLLOW_EASE);
+      const bob = Math.sin(this._camT * 1.7) * 0.04;
+      this.camera.position.set(this._camFollowX, 3.5 + bob, 12);
+      this.camera.lookAt(this._camFollowX, 2.0, 0);
+
+    } else if (this._camPhase === 'admire') {
+      // "Admire your work" — a two-leg cinematic sweep over the freshly trimmed
+      // hedge, then a pull-back to a wide hero shot framing the whole garden:
+      // the pristine hedge, Tom (centred), and the contented old couple.
+      const hw = this._admireHalfWidth;
+      const p  = Math.min(this._camT / this._admireDur, 1);
+      if (p < 0.55) {
+        // Leg 1: glide low along the hedge from the left end to centre.
+        const e = ss(p / 0.55);
+        this._camPosA.set(-hw - 2.0, 1.5, 6.5);
+        this._camPosB.set( hw * 0.4, 2.4, 8.5);
+        this._camLookA.set(-hw * 0.4, 2.0, 0);
+        this._camLookB.set( hw * 0.15, 1.9, 0);
+        this.camera.position.lerpVectors(this._camPosA, this._camPosB, e);
+        this._camLookTgt.lerpVectors(this._camLookA, this._camLookB, e);
+      } else {
+        // Leg 2: rise and pull back to frame everyone for the curtain call.
+        const e = ss((p - 0.55) / 0.45);
+        this._camPosA.set(hw * 0.4, 2.4, 8.5);
+        this._camPosB.set(0, 5.5, Math.max(15, hw + 9));
+        this._camLookA.set(hw * 0.15, 1.9, 0);
+        this._camLookB.set(0, 1.6, 0);
+        this.camera.position.lerpVectors(this._camPosA, this._camPosB, e);
+        this._camLookTgt.lerpVectors(this._camLookA, this._camLookB, e);
+      }
+      this.camera.lookAt(this._camLookTgt);
+
+    } else if (this._camPhase === 'cutscene') {
+      const cs = this._cutscene;
+      if (!cs) return;
+
+      const { panEnd, getDinEnd, departEnd, turnEnd, returnEnd, total } = CS_BEATS;
+      const phase = cs.phase;
+      const rsx   = this._csRoadStartX;
+
+      // Snapshot camera when entering settle so the lerp start is stable
+      if (phase !== this._csPrevPhase) {
+        if (phase === 'settle') {
+          this._csSettlePos.copy(this.camera.position);
+          this._csSettleLook.copy(this._camLookTgt);
+        }
+        this._csPrevPhase = phase;
+        this.callbacks.onCutscenePhase?.(phase);
+      }
+
+      const t = cs.t;
+
+      if (t < panEnd) {
+        // Slow drift — car + Tom in foreground, house/garden fills background
+        const p    = ss(t / panEnd);
+        const camX = rsx + 4 - p * 3;   // rsx+4 → rsx+1, gentle leftward pan
+        this.camera.position.set(camX, 4.0, 17);
+        this._camLookTgt.set(rsx - 2, 1.8, -1);  // looking through car toward house
+        this.camera.lookAt(this._camLookTgt);
+
+      } else if (t < getDinEnd) {
+        // Hold — Tom climbs in; tighten on car
+        this.camera.position.set(rsx + 1, 3.5, 16);
+        this._camLookTgt.set(rsx, 1.8, 0);
+        this.camera.lookAt(this._camLookTgt);
+
+      } else if (t < departEnd) {
+        // Follow BEHIND departing car (right/garden side as car heads left −X)
+        this._csFollowX += (cs.carX + 6 - this._csFollowX) * Math.min(1, dt * 2.5);
+        this.camera.position.set(this._csFollowX, 2.6, 10);
+        this._camLookTgt.set(this._csFollowX - 9, 1.5, ROAD_Z);
+        this.camera.lookAt(this._camLookTgt);
+
+      } else if (t < turnEnd) {
+        // Crane arc: glides ahead of the car while it U-turns
+        this._csFollowX += (cs.carX - 6 - this._csFollowX) * Math.min(1, dt * 3.5);
+        this.camera.position.set(this._csFollowX, 2.9, 10);
+        this._camLookTgt.set(cs.carX, 1.5, ROAD_Z);
+        this.camera.lookAt(this._camLookTgt);
+
+      } else if (t < returnEnd) {
+        // Camera BEHIND returning car — new garden approaches from the right
+        this._csFollowX += (cs.carX - 6 - this._csFollowX) * Math.min(1, dt * 2.5);
+        this.camera.position.set(this._csFollowX, 2.6, 10);
+        this._camLookTgt.set(this._csFollowX + 9, 1.5, ROAD_Z);
+        this.camera.lookAt(this._camLookTgt);
+
+      } else if (t < total) {
+        // Settle: ease from arrival framing to the standard pan-in start
+        const p = ss((t - returnEnd) / (total - returnEnd));
+        this._camPosB.set(-7, 1.6, 8);
+        this._camLookB.set(0, 3.0, 0);
+        this.camera.position.lerpVectors(this._csSettlePos, this._camPosB, p);
+        this._camLookTgt.lerpVectors(this._csSettleLook, this._camLookB, p);
+        this.camera.lookAt(this._camLookTgt);
+
+      } else {
+        if (cs.done) this._endCutscene();
+      }
+
+    } else if (this._camPhase === 'win') {
+      // Triumphant pull-back + rise — reveals the whole trimmed hedge
+      const WIN_DUR = 3.5;
+      const p = Math.min(this._camT / WIN_DUR, 1);
+      const e = ss(p);
+      this._camPosA.set(0, 3.5, 12);
+      this._camPosB.set(0, 8.0, 18);
+      this._camLookA.set(0, 2.0, 0);
+      this._camLookB.set(0, 0.5, 0);
+      this.camera.position.lerpVectors(this._camPosA, this._camPosB, e);
+      this._camLookTgt.lerpVectors(this._camLookA, this._camLookB, e);
+      this.camera.lookAt(this._camLookTgt);
+
+    } else if (this._camPhase === 'gameover') {
+      // Slow dramatic drop toward ground level
+      const OVER_DUR = 2.8;
+      const p = Math.min(this._camT / OVER_DUR, 1);
+      const e = ss(p);
+      this._camPosA.set(0, 3.5, 12);
+      this._camPosB.set(0, 0.9, 10.5);
+      this._camLookA.set(0, 2.0, 0);
+      this._camLookB.set(0, 1.5, 0);
+      this.camera.position.lerpVectors(this._camPosA, this._camPosB, e);
+      this._camLookTgt.lerpVectors(this._camLookA, this._camLookB, e);
+      this.camera.lookAt(this._camLookTgt);
+    }
+  }
+
+  private _fixedUpdate(dt: number): void {
+    this.input.poll();
+    this.gamepad.poll();
+    this.gamepad.applyTo(this.input.state);
+    this.touch.applyTo(this.input.state);
+
+    switch (this.state) {
+      case GAME_STATES.MENU:      this._tickMenu(dt);      break;
+      case GAME_STATES.PLAYING:   this._tickPlaying(dt);   break;
+      case GAME_STATES.CUTSCENE:  this._tickCutscene(dt);  break;
+      case GAME_STATES.WIN:
+      case GAME_STATES.GAME_OVER: this._tickEndScreen(dt); break;
+    }
+
+    // Particles animate in all states (win celebration, fade-out)
+    this.leaves.update(dt);
+    this.input.consumeOneShots();
+  }
+
+  private _tickMenu(dt: number): void {
+    this._t += dt;
+    this.camel.update(dt);
+    this.couple.update(dt);
+    if (this.input.state.start || this.input.state.launch) {
+      this._startNewGame();
+    }
+  }
+
+  private _startNewGame(): void {
+    this.patience = 1;
+    this._trimmed = 0;
+    this._score   = 0;
+    this._t       = 0;
+    this._startLevel(1, true);
+    this._setState(GAME_STATES.PLAYING);
+  }
+
+  // Build a level: rebuild the hedge from its config, recompute play/camera
+  // bounds and difficulty, rebuild width-fitted scenery. `fresh` = new run
+  // (patience resets to full) vs. advancing mid-run (patience tops up).
+  private _startLevel(level: number, fresh: boolean): void {
+    this._level = level;
+    const cfg = getLevelConfig(level);
+
+    this.scene.remove(this.hedge.group);
+    this.hedge.dispose();
+    this.hedge = new Hedge(cfg);
+    this.scene.add(this.hedge.group);
+
+    this.scene.remove(this.couple.group);
+    this.couple = new OldCouple(level);
+    this.scene.add(this.couple.group);
+
+    // Camel range so its aim point (x + snipOffset) can reach every segment.
+    this._camelMinX = this.hedge.leftX  - this._snipOffset;
+    this._camelMaxX = this.hedge.rightX - this._snipOffset;
+    const cam = GAME_CONFIG.CAMERA;
+    this._camBoundX  = Math.max(0, this.hedge.halfWidth - cam.VISIBLE_HALF_X + cam.BOUND_MARGIN);
+    this._camFollowX = 0;
+    this.camel.x     = 0;
+
+    this._patienceSeconds = cfg.patienceSeconds;
+    this._perOvergrown    = cfg.perOvergrown;
+    this._camelSpeed      = cfg.camelSpeed;
+
+    this._buildLevelScenery(this.hedge.halfWidth);
+
+    this.patience = 1;  // always reset to full — each level is a fresh challenge
+
+    this.couple.setImpatient(this.patience < 0.5);
+    this.callbacks.onLevel?.(level);
+    this.callbacks.onPatience?.(this.patience);
+    this.callbacks.onProgress?.(this.hedge.activeCount, this.hedge.segments.length);
+  }
+
+  private _tickPlaying(dt: number): void {
+    this._t += dt;
+
+    // During the level-clear interlude, gameplay is frozen — only the curtain-
+    // call choreography (camel centring, couple gathering, gentle sway) runs.
+    if (this._admiring) { this._tickAdmire(dt); return; }
+
+    const newX = this.camel.x + this.input.state.moveX * this._camelSpeed * dt;
+    this.camel.x = Math.max(this._camelMinX, Math.min(this._camelMaxX, newX));
+    this.camel.update(dt);
+
+    const aimX = this.camel.x + this._snipOffset;
+    this._aimX = aimX;
+    const aimSeg = this.hedge.getSegmentAt(aimX);
+    this._aimSnippable = !!(aimSeg && this.hedge.isSnippable(aimSeg));
+
+    if (this.input.state.launch) {
+      const seg = aimSeg;
+      if (seg && this.hedge.isSnippable(seg)) {
+        this.hedge.snip(seg);
+        this.hedge.startGrowing(seg);
+        this.camel.triggerSnip();
+        this.leaves.burst(seg.centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN, 0.3);
+        this._trimmed++;
+        const snipPts = GAME_CONFIG.SCORE.PER_SNIP * this._level;
+        this._score += snipPts;
+        this.callbacks.onScore?.(this._score);
+        this.callbacks.onProgress?.(this.hedge.activeCount, this.hedge.segments.length);
+      }
+    }
+
+    // Patience drains faster the more overgrown segments are active (Beer Tapper spiral)
+    const overdrainRate = this.hedge.overgrownCount * this._perOvergrown;
+    this.patience = Math.max(0, this.patience - (1 / this._patienceSeconds + overdrainRate) * dt);
+    this.callbacks.onPatience?.(this.patience);
+    this.couple.setImpatient(this.patience < 0.5);
+    this.couple.update(dt);
+
+    this.hedge.update(dt);
+    this.callbacks.onProgress?.(this.hedge.activeCount, this.hedge.segments.length);
+
+    if (this.hedge.allClear) {
+      // Endless escalation: pause to admire the pristine hedge, then roll into
+      // a harder level once the curtain-call sweep finishes.
+      this._beginAdmire();
+      return;
+    }
+    if (this.patience <= 0) {
+      this._setState(GAME_STATES.GAME_OVER);
+    }
+  }
+
+  // Kick off the "admire your work" interlude after a level is cleared.
+  private _beginAdmire(): void {
+    this._admiring         = true;
+    this._admireT          = 0;
+    this._admireHalfWidth  = this.hedge.halfWidth;
+    this._nextLevel        = this._level + 1;
+
+    this._camPhase = 'admire';
+    this._camT     = 0;
+
+    // Confetti of clippings along the freshly trimmed hedge.
+    const segs = this.hedge.segments;
+    for (let i = 0; i < segs.length; i += 2) {
+      this.leaves.burst(segs[i].centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT + 0.5, 0.2);
+    }
+
+    // The couple are delighted — they amble over to admire Tom's handiwork.
+    this.couple.setImpatient(false);
+    this.couple.gatherNear(0);
+
+    this.callbacks.onLevelCleared?.(this._level);
+    const bonus = Math.floor(this.patience * GAME_CONFIG.SCORE.BONUS_MAX * this._level);
+    this._score += bonus;
+    this.callbacks.onScore?.(this._score);
+    this.callbacks.onLevelBonus?.(bonus, this._score);
+  }
+
+  // Per-step choreography during the admire interlude. Camera is driven in
+  // _renderUpdate; here we centre Tom, let the couple gather, and keep foliage
+  // swaying. When the sweep finishes, advance to the next (harder) level.
+  private _tickAdmire(dt: number): void {
+    this._admireT += dt;
+
+    // Ease Tom to centre stage for the curtain call.
+    this.camel.x += (0 - this.camel.x) * Math.min(1, dt * 2);
+    this.camel.update(dt);
+    this.couple.update(dt);
+    this.hedge.update(dt);
+
+    if (this._admireT >= this._admireDur) {
+      this._admiring = false;
+      this._beginCutscene(this._nextLevel);
+    }
+  }
+
+  private _beginCutscene(nextLevel: number): void {
+    this._nextCutsceneLevel = nextLevel;
+    this._csLevelBuilt      = false;
+    this._csPrevPhase       = '';
+    this._csRoadStartX      = -(this.hedge.halfWidth + 2.5);
+    this._cutscene = new Cutscene(this._csRoadStartX);
+    this.scene.add(this._cutscene.group);
+    this.camel.group.visible  = false;
+    this.couple.group.visible = false;
+    // Camera starts right of car; depart phase eases from here
+    this._csFollowX = this._csRoadStartX + 1;
+    this._camPhase  = 'cutscene';
+    this._camT      = 0;
+    // Show the next level number on the cutscene card immediately
+    this.callbacks.onLevel?.(nextLevel);
+    this._setState(GAME_STATES.CUTSCENE);
+  }
+
+  private _tickCutscene(_dt: number): void {
+    // Rebuild level at turn beat — car is at far-left end of road, old garden off-screen
+    if (!this._csLevelBuilt && this._cutscene?.phase === 'turn') {
+      this._startLevel(this._nextCutsceneLevel, false);
+      this.couple.group.visible = false;   // re-hide the freshly created couple
+      this._csLevelBuilt = true;
+    }
+    // Space / launch skips to gameplay immediately
+    if (this.input.state.start || this.input.state.launch) {
+      this._endCutscene();
+    }
+  }
+
+  private _endCutscene(): void {
+    if (!this._cutscene) return;
+    // If skipped before transit, build the level now
+    if (!this._csLevelBuilt) {
+      this._startLevel(this._nextCutsceneLevel, false);
+      this._csLevelBuilt = true;
+    }
+    this.scene.remove(this._cutscene.group);
+    this._cutscene.dispose();
+    this._cutscene = null;
+    this.camel.group.visible  = true;
+    this.couple.group.visible = true;
+    this._csPrevPhase = '';
+    this._camPhase = 'pan-in';
+    this._camT     = 0;
+    this._setState(GAME_STATES.PLAYING);
+  }
+
+  private _tickEndScreen(dt: number): void {
+    this.couple.update(dt);
+    this.camel.update(dt);
+    if (this.input.state.start || this.input.state.launch) {
+      this._setState(GAME_STATES.MENU);
+    }
+  }
+
+  private _setState(next: string): void {
+    this.state = next;
+    this.callbacks.onStateChange?.(next);
+
+    if (next === GAME_STATES.CUTSCENE) {
+      // Camera phase already set in _beginCutscene — don't touch it here
+    } else if (next === GAME_STATES.PLAYING) {
+      this._camPhase = 'pan-in';
+      this._camT = 0;
+    } else if (next === GAME_STATES.WIN) {
+      this._camPhase = 'win';
+      this._camT = 0;
+      // Celebration: burst clippings from every trimmed segment
+      const segs = this.hedge.segments;
+      for (let i = 0; i < segs.length; i += 2) {
+        this.leaves.burst(segs[i].centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT + 0.5, 0.2);
+      }
+      if (this._score > this._hiScore) {
+        this._hiScore = this._score;
+        localStorage.setItem('camelClipper_hiScore', String(this._hiScore));
+      }
+      if (this._level > this._highestLevel) {
+        this._highestLevel = this._level;
+        localStorage.setItem('camelClipper_highestLevel', String(this._highestLevel));
+      }
+      this.callbacks.onHighScore?.(this._hiScore, this._highestLevel);
+    } else if (next === GAME_STATES.GAME_OVER) {
+      this._camPhase = 'gameover';
+      this._camT = 0;
+      if (this._score > this._hiScore) {
+        this._hiScore = this._score;
+        localStorage.setItem('camelClipper_hiScore', String(this._hiScore));
+      }
+      if (this._level > this._highestLevel) {
+        this._highestLevel = this._level;
+        localStorage.setItem('camelClipper_highestLevel', String(this._highestLevel));
+      }
+      this.callbacks.onHighScore?.(this._hiScore, this._highestLevel);
+    } else if (next === GAME_STATES.MENU) {
+      this._camPhase = 'menu';
+      this._camT = 0;
+    }
+  }
+}
