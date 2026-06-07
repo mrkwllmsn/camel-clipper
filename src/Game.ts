@@ -11,6 +11,7 @@ import InputManager from './systems/InputManager';
 import GamepadManager from './systems/GamepadManager';
 import TouchManager from './systems/TouchManager';
 import { OutlinePass } from './systems/OutlinePass';
+import { AudioManager } from './systems/AudioManager';
 import { Cutscene, CS_BEATS, ROAD_Z } from './entities/Cutscene';
 
 type CamPhase = 'menu' | 'pan-in' | 'playing' | 'admire' | 'cutscene' | 'win' | 'gameover';
@@ -91,6 +92,7 @@ export default class Game {
   private input:   InputManager;
   private gamepad: GamepadManager;
   private touch:   TouchManager;
+  private audio:   AudioManager;
 
   // Touch devices fill the whole screen (aspect tracks the viewport);
   // desktop keeps the framed 16:9 letterbox.
@@ -128,6 +130,8 @@ export default class Game {
     this.input   = new InputManager();
     this.gamepad = new GamepadManager();
     this.touch   = new TouchManager(document.body);
+    this.audio   = new AudioManager();
+    this.audio.arm(); // music starts on first user gesture — nothing loaded before
 
     this._initRenderer();
     this._initScene();
@@ -170,7 +174,7 @@ export default class Game {
     this.renderer.toneMapping         = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.72;
     this.renderer.shadowMap.enabled   = true;
-    this.renderer.shadowMap.type      = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type      = THREE.PCFShadowMap;
     window.addEventListener('resize', () => this._onResize());
     window.addEventListener('orientationchange', () => this._onResize());
     this._outline = new OutlinePass(this.renderer, 0.1, 300);
@@ -457,10 +461,10 @@ export default class Game {
       this._brickMat = new THREE.MeshLambertMaterial({ map: brickTex });
     }
     if (!this._houseBrickMat) {
-      const brickTex = (this._brickMat.map as THREE.Texture).clone();
+      const brickTex = loader.load(`${import.meta.env.BASE_URL}textures/bricks_512.png`);
       brickTex.wrapS = brickTex.wrapT = THREE.RepeatWrapping;
+      brickTex.colorSpace = THREE.SRGBColorSpace;
       brickTex.repeat.set(3, 2);
-      brickTex.needsUpdate = true;
       this._houseBrickMat = new THREE.MeshLambertMaterial({ map: brickTex });
     }
     if (!this._houseRoofMat) {
@@ -697,6 +701,7 @@ export default class Game {
     cancelAnimationFrame(this._rafId);
     this._loopRunning = false;
     if (this._debugKeyHandler) window.removeEventListener('keydown', this._debugKeyHandler);
+    this.audio.destroy();
     this._outline.dispose();
     this.renderer.dispose();
   }
@@ -832,6 +837,8 @@ export default class Game {
         }
         this._csPrevPhase = phase;
         this.callbacks.onCutscenePhase?.(phase);
+        // Kick the engine sound the moment the car comes into view.
+        if (phase === 'pan') this.audio.playCar();
       }
 
       const t = cs.t;
@@ -1020,6 +1027,7 @@ export default class Game {
         this.hedge.snip(seg);
         this.hedge.startGrowing(seg);
         this.camel.triggerSnip();
+        this.audio.playSnip();
         this.leaves.burst(seg.centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN, 0.3);
         this._trimmed++;
         const snipPts = GAME_CONFIG.SCORE.PER_SNIP * this._level;
@@ -1128,6 +1136,7 @@ export default class Game {
 
   private _endCutscene(): void {
     if (!this._cutscene) return;
+    this.audio.stopCar();   // halt engine sound (covers skip mid-drive too)
     // If skipped before transit, build the level now
     if (!this._csLevelBuilt) {
       this._startLevel(this._nextCutsceneLevel, false);

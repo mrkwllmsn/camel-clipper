@@ -51,7 +51,7 @@ export class Hedge {
   private static _makeBlobPool(): THREE.BufferGeometry[] {
     const pool: THREE.BufferGeometry[] = [];
     for (let v = 0; v < 6; v++) {
-      const geo = new THREE.IcosahedronGeometry(1, 1).toNonIndexed();
+      const geo = new THREE.IcosahedronGeometry(1, 1);
       const pos = geo.attributes.position as THREE.BufferAttribute;
       for (let i = 0; i < pos.count; i++) {
         const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
