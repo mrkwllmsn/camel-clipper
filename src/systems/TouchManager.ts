@@ -1,5 +1,17 @@
 import type { InputState } from '../utils/Constants';
 
+/**
+ * Touch controls — no on-screen joystick or buttons.
+ *
+ *   • Horizontal DRAG anywhere → analog left/right movement (camel slides).
+ *   • Quick TAP                → the "Space" action: snip while playing,
+ *                                start / restart / skip-cutscene otherwise.
+ *   • Small ⏸ button (top-left) → pause.
+ *
+ * Movement is relative to where the finger first landed, so it works as an
+ * invisible thumb-stick: push left of the start point to go left, right to go
+ * right, hold to keep moving, release to stop.
+ */
 export default class TouchManager {
   moveX:      number;
   moveY:      number;
@@ -8,28 +20,34 @@ export default class TouchManager {
   pause:      boolean;
   enabled:    boolean;
 
-  private _stickId:     number | null;
-  private _stickOrigin: { x: number; y: number };
-  private _stickRadius: number;
-  private _actionId:    number | null;
-  private _prevAction:  boolean;
+  // px of horizontal travel for full speed; tuned for thumb reach on phones
+  private readonly _moveRadius = 70;
+  // movement (px) / duration (ms) below which a press counts as a tap, not a drag
+  private readonly _tapSlop = 12;
+  private readonly _tapMaxMs = 300;
 
-  private stickArea!: HTMLElement;
-  private stickRing!: HTMLElement;
-  private stickKnob!: HTMLElement;
-  private actionBtn!: HTMLElement;
-  private pauseBtn!:  HTMLElement;
+  private _dragId:    number | null;
+  private _startX:    number;
+  private _startY:    number;
+  private _startT:    number;
+  private _moved:     boolean;
+  private _pendingTap: boolean;
+
+  private surface!: HTMLElement;
+  private pauseBtn!: HTMLElement;
 
   constructor(container?: HTMLElement) {
-    this.moveX      = 0; this.moveY = 0;
+    this.moveX = 0; this.moveY = 0;
     this.actionHeld = false;
     this.launch     = false;
     this.pause      = false;
-    this._prevAction  = false;
-    this._stickId     = null;
-    this._stickOrigin = { x: 0, y: 0 };
-    this._stickRadius = 60;
-    this._actionId    = null;
+
+    this._dragId     = null;
+    this._startX     = 0;
+    this._startY     = 0;
+    this._startT     = 0;
+    this._moved      = false;
+    this._pendingTap = false;
 
     this.enabled = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
     if (!this.enabled) return;
@@ -42,154 +60,128 @@ export default class TouchManager {
     const css = (el: HTMLElement, s: Partial<CSSStyleDeclaration>) =>
       Object.assign(el.style, s);
 
-    this.stickArea = document.createElement('div');
-    css(this.stickArea, {
-      position: 'absolute', left: '0', bottom: '0',
-      width: '50%', height: '60%',
-      pointerEvents: 'auto', touchAction: 'none', zIndex: '50',
-    });
-
-    this.stickRing = document.createElement('div');
-    css(this.stickRing, {
-      position: 'absolute',
-      width: '120px', height: '120px',
-      border: '2px solid rgba(255,255,255,0.5)',
-      borderRadius: '50%',
-      pointerEvents: 'none', opacity: '0.5', zIndex: '51',
-      left: '40px', bottom: '40px',
-    });
-
-    this.stickKnob = document.createElement('div');
-    css(this.stickKnob, {
-      position: 'absolute',
-      width: '50px', height: '50px',
-      borderRadius: '50%',
-      background: 'rgba(255,221,51,0.75)',
-      border: '2px solid #000',
-      pointerEvents: 'none', zIndex: '52',
-      left: '75px', bottom: '75px',
-    });
-
-    this.actionBtn = document.createElement('div');
-    css(this.actionBtn, {
-      position: 'absolute',
-      right: '30px', bottom: '40px',
-      width: '120px', height: '120px',
-      borderRadius: '50%',
-      background: 'rgba(136,204,255,0.28)',
-      border: '3px solid #fff',
-      color: '#fff',
-      textAlign: 'center',
-      lineHeight: '114px',
-      fontFamily: "'Press Start 2P', monospace",
-      fontSize: '12px',
-      textShadow: '2px 2px 0 #000',
+    // Full-screen invisible input surface.
+    this.surface = document.createElement('div');
+    css(this.surface, {
+      position: 'fixed', inset: '0',
       pointerEvents: 'auto', touchAction: 'none',
-      userSelect: 'none', zIndex: '50',
+      zIndex: '50',
+      background: 'transparent',
     });
-    this.actionBtn.textContent = 'GO';
 
+    // Pause button — bottom-right, clear of the top HUD. A frosted-glass disc
+    // with two clean bars. Hidden until the game enters PLAYING (setPauseVisible).
     this.pauseBtn = document.createElement('div');
     css(this.pauseBtn, {
-      position: 'absolute',
-      right: '18px', top: '18px',
-      width: '52px', height: '52px',
-      borderRadius: '8px',
-      background: 'rgba(0,0,0,0.55)',
-      border: '2px solid rgba(255,255,255,0.7)',
-      color: '#fff',
-      textAlign: 'center',
-      lineHeight: '48px',
-      fontFamily: "'Press Start 2P', monospace",
-      fontSize: '18px',
-      textShadow: '2px 2px 0 #000',
+      position: 'fixed',
+      right:  'calc(env(safe-area-inset-right, 0px) + 16px)',
+      bottom: 'calc(env(safe-area-inset-bottom, 0px) + 16px)',
+      display: 'none',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '5px',
+      width: '48px', height: '48px',
+      borderRadius: '50%',
+      background: 'rgba(20,40,15,0.42)',
+      border: '2px solid rgba(255,255,255,0.55)',
+      boxShadow: '0 2px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.25)',
+      backdropFilter: 'blur(4px)',
+      WebkitBackdropFilter: 'blur(4px)',
       pointerEvents: 'auto', touchAction: 'none',
-      userSelect: 'none', zIndex: '50',
-    });
-    this.pauseBtn.textContent = 'II';
+      userSelect: 'none', zIndex: '60',
+      transition: 'transform 0.1s ease, background 0.15s ease',
+    } as Partial<CSSStyleDeclaration>);
+    for (let i = 0; i < 2; i++) {
+      const bar = document.createElement('div');
+      css(bar, {
+        width: '5px', height: '18px',
+        borderRadius: '2px',
+        background: 'rgba(255,255,255,0.92)',
+      });
+      this.pauseBtn.append(bar);
+    }
 
-    container.append(this.stickArea, this.stickRing, this.stickKnob, this.actionBtn, this.pauseBtn);
+    container.append(this.surface, this.pauseBtn);
   }
 
   private _bind(): void {
-    this.stickArea.addEventListener('pointerdown', (e) => {
+    this.surface.addEventListener('pointerdown', (e) => {
+      if (this._dragId !== null) return;       // ignore extra fingers
       e.preventDefault();
-      this._stickId = e.pointerId;
-      this._stickOrigin.x = e.clientX;
-      this._stickOrigin.y = e.clientY;
-      this._placeStick(e.clientX, e.clientY, 0, 0);
-      this.stickRing.style.opacity = '0.9';
-    });
-
-    window.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== this._stickId) return;
-      const dx   = e.clientX - this._stickOrigin.x;
-      const dy   = e.clientY - this._stickOrigin.y;
-      const r    = this._stickRadius;
-      const dist = Math.min(Math.hypot(dx, dy), r);
-      const ang  = Math.atan2(dy, dx);
-      const kx   = Math.cos(ang) * dist;
-      const ky   = Math.sin(ang) * dist;
-      this.moveX =  kx / r;
-      this.moveY = -ky / r;
-      this._placeStick(this._stickOrigin.x, this._stickOrigin.y, kx, ky);
-    });
-
-    const release = (e: PointerEvent) => {
-      if (e.pointerId !== this._stickId) return;
-      this._stickId = null;
-      this.moveX = 0; this.moveY = 0;
-      this.stickRing.style.opacity = '0.5';
-      this.stickRing.style.left   = '40px';
-      this.stickRing.style.top    = 'auto';
-      this.stickRing.style.bottom = '40px';
-      this.stickKnob.style.left   = '75px';
-      this.stickKnob.style.top    = 'auto';
-      this.stickKnob.style.bottom = '75px';
-    };
-    window.addEventListener('pointerup',     release);
-    window.addEventListener('pointercancel', release);
-
-    this.actionBtn.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      this._actionId  = e.pointerId;
+      this._dragId = e.pointerId;
+      this._startX = e.clientX;
+      this._startY = e.clientY;
+      this._startT = e.timeStamp;
+      this._moved  = false;
       this.actionHeld = true;
+      this.surface.setPointerCapture?.(e.pointerId);
     });
-    const actionRelease = (e: PointerEvent) => {
-      if (e.pointerId !== this._actionId) return;
-      this._actionId  = null;
+
+    this.surface.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== this._dragId) return;
+      const dx = e.clientX - this._startX;
+      const dy = e.clientY - this._startY;
+      if (Math.abs(dx) > this._tapSlop || Math.abs(dy) > this._tapSlop) this._moved = true;
+      // Clamp to ±1; deadzone equal to the tap slop so taps don't nudge.
+      const eff = Math.abs(dx) < this._tapSlop ? 0 : dx;
+      this.moveX = Math.max(-1, Math.min(1, eff / this._moveRadius));
+    });
+
+    const end = (e: PointerEvent) => {
+      if (e.pointerId !== this._dragId) return;
+      const quick = (e.timeStamp - this._startT) <= this._tapMaxMs;
+      if (!this._moved && quick) this._pendingTap = true;   // it was a tap
+      this._dragId = null;
+      this._moved  = false;
+      this.moveX   = 0;
       this.actionHeld = false;
     };
-    this.actionBtn.addEventListener('pointerup',     actionRelease);
-    this.actionBtn.addEventListener('pointercancel', actionRelease);
-    this.actionBtn.addEventListener('pointerleave',  actionRelease);
+    this.surface.addEventListener('pointerup',     end);
+    this.surface.addEventListener('pointercancel', end);
 
     this.pauseBtn.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      this.pauseBtn.style.transform = 'scale(0.9)';
+      this.pauseBtn.style.background = 'rgba(20,40,15,0.6)';
       this.pause = true;
     });
+    const relax = () => {
+      this.pauseBtn.style.transform = 'scale(1)';
+      this.pauseBtn.style.background = 'rgba(20,40,15,0.42)';
+    };
+    this.pauseBtn.addEventListener('pointerup', relax);
+    this.pauseBtn.addEventListener('pointercancel', relax);
+    this.pauseBtn.addEventListener('pointerleave', relax);
   }
 
-  private _placeStick(cx: number, cy: number, kx: number, ky: number): void {
-    this.stickRing.style.left   = `${cx - 60}px`;
-    this.stickRing.style.top    = `${cy - 60}px`;
-    this.stickRing.style.bottom = 'auto';
-    this.stickKnob.style.left   = `${cx + kx - 25}px`;
-    this.stickKnob.style.top    = `${cy + ky - 25}px`;
-    this.stickKnob.style.bottom = 'auto';
+  // Show / hide the ⏸ button (game shows it only during active play).
+  setPauseVisible(visible: boolean): void {
+    if (!this.enabled) return;
+    this.pauseBtn.style.display = visible ? 'flex' : 'none';
+  }
+
+  // While paused the full-screen drag surface must not eat snip taps; the Vue
+  // overlay sits above it anyway, but disable input here too for safety.
+  setPaused(paused: boolean): void {
+    if (!this.enabled) return;
+    this.surface.style.pointerEvents = paused ? 'none' : 'auto';
+    // Drop any in-flight drag/tap so resuming doesn't fire a stale action.
+    this._dragId = null;
+    this._moved = false;
+    this._pendingTap = false;
+    this.moveX = 0;
+    this.actionHeld = false;
   }
 
   applyTo(state: InputState): void {
     if (!this.enabled) return;
     if (this.moveX !== 0) state.moveX = this.moveX;
-    if (this.moveY !== 0) state.moveY = this.moveY;
-    if (this.actionHeld) {
-      state.actionHeld = true;
-      if (!this._prevAction) state.launch = true;
-      this._prevAction = true;
-    } else {
-      this._prevAction = false;
+    if (this.actionHeld) state.actionHeld = true;
+    // A tap fires the one-shot action (snip / start / restart / skip).
+    if (this._pendingTap) {
+      state.launch     = true;
+      this._pendingTap = false;
     }
     if (this.pause) { state.pause = true; this.pause = false; }
   }

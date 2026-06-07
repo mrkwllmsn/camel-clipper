@@ -6,8 +6,10 @@ export class Camel {
   group:           THREE.Group;
   private _t:      number = 0;
   private _snip:   number = 0;
+  private _onLoaded: (() => void) | null = null;
 
-  constructor() {
+  constructor(onLoaded?: () => void) {
+    this._onLoaded = onLoaded ?? null;
     this.group = new THREE.Group();
     this.group.position.set(0, 0, GAME_CONFIG.CAMEL.Z);
     this._addPlaceholder();
@@ -59,6 +61,8 @@ export class Camel {
       this.group.add(model);
     } catch (err) {
       console.warn('Camel GLB load failed:', err);
+    } finally {
+      this._onLoaded?.();
     }
   }
 

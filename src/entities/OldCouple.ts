@@ -17,7 +17,10 @@ interface Wander {
 }
 
 // Roomy bounds the couple potter about within (in front of / beside the garden).
-const WANDER = { X_MIN: -9, X_MAX: 9, Z_MIN: 0.6, Z_MAX: 3.2 };
+// Keep the couple on their own side of the garden (right of the play area,
+// which spans x −5.5…+5.5) and a little nearer the camera, so their speech
+// bubble never drifts over Tom and the hedge.
+const WANDER = { X_MIN: 6.2, X_MAX: 9, Z_MIN: 2.0, Z_MAX: 4.0 };
 
 function rand(min: number, max: number): number {
   return min + Math.random() * (max - min);

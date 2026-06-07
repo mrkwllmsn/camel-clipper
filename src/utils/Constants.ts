@@ -13,6 +13,7 @@ export interface InputState {
 export interface GameCallbacks {
   onScore?:           (score: number) => void;
   onStateChange?:     (state: string) => void;
+  onPause?:           (paused: boolean) => void;
   onPatience?:        (p: number) => void;
   onProgress?:        (trimmed: number, total: number) => void;
   onCoupleScreenPos?: (x: number, y: number) => void;
@@ -22,6 +23,8 @@ export interface GameCallbacks {
   onHighScore?:       (hiScore: number, highestLevel: number) => void;
   onLevelBonus?:      (bonus: number, total: number) => void;
   onCutscenePhase?:   (phase: string) => void;
+  onLoadProgress?:    (loaded: number, total: number) => void;
+  onLoadComplete?:    () => void;
 }
 
 export const COLORS = {

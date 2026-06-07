@@ -36,9 +36,11 @@ export class Cutscene {
   private _standingCamel = new THREE.Group();
 
   done = false;
+  private _onLoaded: (() => void) | null = null;
 
-  constructor(roadStartX: number) {
+  constructor(roadStartX: number, onLoaded?: () => void) {
     this.roadStartX = roadStartX;
+    this._onLoaded  = onLoaded ?? null;
     this.group      = new THREE.Group();
 
     this._buildBackground(roadStartX);
@@ -91,6 +93,7 @@ export class Cutscene {
   private async _loadAssets(): Promise<void> {
     const loader = new GLTFLoader();
     await Promise.all([this._loadCar(loader), this._loadCamel(loader)]);
+    this._onLoaded?.();
   }
 
   private async _loadCar(loader: GLTFLoader): Promise<void> {

@@ -77,6 +77,7 @@ export default class Game {
   // Level-clear "admire your work" interlude: gameplay pauses, the camera sweeps
   // the pristine hedge then pulls back to a hero shot, before the next level.
   private _admiring   = false;
+  private _paused     = false;
   private _admireT    = 0;
   private _admireDur  = 5.0;
   private _admireHalfWidth = 0;
@@ -91,6 +92,10 @@ export default class Game {
   private gamepad: GamepadManager;
   private touch:   TouchManager;
 
+  // Touch devices fill the whole screen (aspect tracks the viewport);
+  // desktop keeps the framed 16:9 letterbox.
+  private _fill = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
   private hedge!:  Hedge;
   private camel!:  Camel;
   private couple!: OldCouple;
@@ -100,6 +105,9 @@ export default class Game {
   private _aimX         = 0;
   private _aimSnippable = false;
   private _aimDot!:   THREE.Mesh;
+
+  private _assetsTotal  = 1; // camel2.glb (only GLB needed before first frame)
+  private _assetsLoaded = 0;
 
   constructor(canvas: HTMLCanvasElement, callbacks: GameCallbacks = {}) {
     this.canvas    = canvas;
@@ -137,9 +145,10 @@ export default class Game {
     setTimeout(() => this.callbacks.onHighScore?.(this._hiScore, this._highestLevel), 0);
   }
 
-  private _letterboxSize(): { w: number; h: number } {
-    const TARGET = 16 / 9;
+  private _viewSize(): { w: number; h: number } {
     const vw = window.innerWidth, vh = window.innerHeight;
+    if (this._fill) return { w: vw, h: vh };
+    const TARGET = 16 / 9;
     if (vw / vh > TARGET) {
       const h = vh; return { w: Math.round(h * TARGET), h };
     } else {
@@ -147,10 +156,15 @@ export default class Game {
     }
   }
 
+  private _viewAspect(): number {
+    const { w, h } = this._viewSize();
+    return this._fill ? w / h : 16 / 9;
+  }
+
   private _initRenderer(): void {
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    const { w, h } = this._letterboxSize();
+    const { w, h } = this._viewSize();
     this.renderer.setSize(w, h);
     this.renderer.outputColorSpace    = THREE.SRGBColorSpace;
     this.renderer.toneMapping         = THREE.ACESFilmicToneMapping;
@@ -158,6 +172,7 @@ export default class Game {
     this.renderer.shadowMap.enabled   = true;
     this.renderer.shadowMap.type      = THREE.PCFSoftShadowMap;
     window.addEventListener('resize', () => this._onResize());
+    window.addEventListener('orientationchange', () => this._onResize());
     this._outline = new OutlinePass(this.renderer, 0.1, 300);
   }
 
@@ -166,7 +181,7 @@ export default class Game {
     // Fog colour matches sky horizon — warm hazy blue
     this.scene.fog = new THREE.FogExp2(0xc4d8e8, 0.013);
 
-    this.camera = new THREE.PerspectiveCamera(55, 16 / 9, 0.1, 300);
+    this.camera = new THREE.PerspectiveCamera(55, this._viewAspect(), 0.1, 300);
     this.camera.position.set(0, 3.5, 12);
     this.camera.lookAt(0, 2.0, 0);
 
@@ -630,7 +645,7 @@ export default class Game {
     this.scene.add(this.hedge.group);
     this._buildLevelScenery(this.hedge.halfWidth);
 
-    this.camel = new Camel();
+    this.camel = new Camel(() => this._onAssetLoaded());
     this.scene.add(this.camel.group);
 
     this.couple = new OldCouple();
@@ -649,14 +664,22 @@ export default class Game {
     this.scene.add(this._aimDot);
   }
 
+  private _onAssetLoaded(): void {
+    this._assetsLoaded = Math.min(this._assetsLoaded + 1, this._assetsTotal);
+    this.callbacks.onLoadProgress?.(this._assetsLoaded, this._assetsTotal);
+    if (this._assetsLoaded >= this._assetsTotal) {
+      this.callbacks.onLoadComplete?.();
+    }
+  }
+
   setSnipOffset(v: number): void {
     this._snipOffset = v;
   }
 
   private _onResize(): void {
-    const { w, h } = this._letterboxSize();
+    const { w, h } = this._viewSize();
     this.renderer.setSize(w, h);
-    this.camera.aspect = 16 / 9;
+    this.camera.aspect = this._viewAspect();
     this.camera.updateProjectionMatrix();
     this._outline.resize(w, h);
   }
@@ -895,6 +918,17 @@ export default class Game {
     this.gamepad.applyTo(this.input.state);
     this.touch.applyTo(this.input.state);
 
+    // Pause toggle (Esc / touch ⏸) — only meaningful during active play.
+    // Frozen frames skip all gameplay ticks; the loop keeps rendering the
+    // last frame underneath the Vue pause overlay.
+    if (this.input.state.pause && (this.state === GAME_STATES.PLAYING || this._paused)) {
+      this._setPaused(!this._paused);
+    }
+    if (this._paused) {
+      this.input.consumeOneShots();
+      return;
+    }
+
     switch (this.state) {
       case GAME_STATES.MENU:      this._tickMenu(dt);      break;
       case GAME_STATES.PLAYING:   this._tickPlaying(dt);   break;
@@ -1118,9 +1152,26 @@ export default class Game {
     }
   }
 
+  // Freeze / unfreeze gameplay. Notifies the HUD so it can show the overlay,
+  // and toggles the touch ⏸ button (only shown while a frozen-able state runs).
+  private _setPaused(paused: boolean): void {
+    if (this._paused === paused) return;
+    this._paused = paused;
+    this.touch.setPaused(paused);
+    this.callbacks.onPause?.(paused);
+  }
+
+  // Public resume — called by the HUD's RESUME button / backdrop tap.
+  resume(): void { this._setPaused(false); }
+
   private _setState(next: string): void {
     this.state = next;
     this.callbacks.onStateChange?.(next);
+
+    // Leaving play (win / loss / menu) always clears a lingering pause.
+    if (next !== GAME_STATES.PLAYING) this._setPaused(false);
+    // The touch ⏸ button only makes sense during active play.
+    this.touch.setPauseVisible(next === GAME_STATES.PLAYING);
 
     if (next === GAME_STATES.CUTSCENE) {
       // Camera phase already set in _beginCutscene — don't touch it here

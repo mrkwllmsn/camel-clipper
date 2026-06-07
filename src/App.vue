@@ -7,12 +7,22 @@
 
   <!-- Cutscene overlay -->
   <Transition name="cs-fade">
-    <div v-if="gameState === 'CUTSCENE'" class="cs-overlay">
+    <div v-if="gameState === 'CUTSCENE'" class="cs-overlay" :class="{ 'cs-top': isTouch }">
       <div class="cs-card">
         <div class="cs-eyebrow">TOM'S GARDEN CARE</div>
         <div class="cs-title">NEXT JOB</div>
         <div class="cs-level">LEVEL {{ level }}</div>
-        <div class="cs-skip">SPACE to skip</div>
+        <div v-if="levelStats" class="cs-recap">
+          <div class="cs-recap-row">
+            <span>LVL {{ levelStats.completedLevel }} ({{ levelStats.snips }} snips ×{{ levelStats.multiplier }})</span>
+            <span class="cs-recap-val">+{{ levelStats.levelTotal.toLocaleString() }}</span>
+          </div>
+          <div class="cs-recap-row cs-recap-total">
+            <span>TOTAL</span>
+            <span class="cs-recap-val">{{ levelStats.runningTotal.toLocaleString() }}</span>
+          </div>
+        </div>
+        <div class="cs-skip">{{ isTouch ? 'TAP to skip' : 'SPACE to skip' }}</div>
       </div>
     </div>
   </Transition>
@@ -78,9 +88,26 @@
     </div>
   </div>
 
+  <!-- Pause overlay -->
+  <Transition name="pause-fade">
+    <div
+      v-if="paused && gameState === 'PLAYING'"
+      class="pause-overlay"
+      @pointerdown.self="resumeGame"
+    >
+      <div class="pause-card">
+        <div class="pause-glyph">⏸</div>
+        <div class="pause-title">PAUSED</div>
+        <div class="card-rule"><span>❧</span></div>
+        <button class="pause-resume" @pointerdown.stop="resumeGame">RESUME</button>
+        <div class="pause-hint">{{ isTouch ? 'tap anywhere to resume' : 'press ESC to resume' }}</div>
+      </div>
+    </div>
+  </Transition>
+
   <!-- MENU modal -->
   <Transition name="modal">
-    <div v-if="gameState === 'MENU'" class="modal-wrap">
+    <div v-if="gameState === 'MENU'" class="modal-wrap" :class="{ centred: isTouch }">
       <div class="modal-card">
         <div class="card-brand">
           <span class="brand-name">TOM'S GARDEN CARE</span>
@@ -94,9 +121,16 @@
           before the couple lose their patience!
         </p>
         <div class="controls-row">
-          <span class="ctrl-key">← →</span><span class="ctrl-label">move</span>
-          <span class="ctrl-sep">·</span>
-          <span class="ctrl-key">SPACE</span><span class="ctrl-label">snip</span>
+          <template v-if="isTouch">
+            <span class="ctrl-key">DRAG</span><span class="ctrl-label">move</span>
+            <span class="ctrl-sep">·</span>
+            <span class="ctrl-key">TAP</span><span class="ctrl-label">snip</span>
+          </template>
+          <template v-else>
+            <span class="ctrl-key">← →</span><span class="ctrl-label">move</span>
+            <span class="ctrl-sep">·</span>
+            <span class="ctrl-key">SPACE</span><span class="ctrl-label">snip</span>
+          </template>
         </div>
         <div v-if="hiScore > 0" class="hi-score-row">
           <span class="hi-score-label">HI-SCORE</span>
@@ -104,7 +138,7 @@
           <span v-if="highestLevel > 0" class="hi-level-val">· BEST LEVEL {{ highestLevel }}</span>
         </div>
         <div class="card-rule"><span>✦</span></div>
-        <div class="press-start blink">PRESS SPACE TO START</div>
+        <div class="press-start blink">{{ isTouch ? 'TAP TO START' : 'PRESS SPACE TO START' }}</div>
       </div>
     </div>
   </Transition>
@@ -125,7 +159,7 @@
           <div v-if="score >= hiScore && score > 0" class="new-hi">NEW HI-SCORE!</div>
         </div>
         <div class="card-rule win-rule"><span>✦</span></div>
-        <div class="press-start blink">PRESS SPACE TO PLAY AGAIN</div>
+        <div class="press-start blink">{{ isTouch ? 'TAP TO PLAY AGAIN' : 'PRESS SPACE TO PLAY AGAIN' }}</div>
       </div>
     </div>
   </Transition>
@@ -148,10 +182,53 @@
           <div class="score-hi-row">HI: {{ hiScore.toLocaleString() }} · BEST LVL {{ highestLevel || level }}</div>
         </div>
         <div class="card-rule lose-rule"><span>✦</span></div>
-        <div class="press-start blink">PRESS SPACE TO TRY AGAIN</div>
+        <div class="press-start blink">{{ isTouch ? 'TAP TO TRY AGAIN' : 'PRESS SPACE TO TRY AGAIN' }}</div>
       </div>
     </div>
   </Transition>
+  <!-- Loading screen -->
+  <Transition name="loader-fade">
+    <div v-if="isLoading" class="loader-overlay">
+      <div class="loader-leaves">
+        <span v-for="i in 12" :key="i" class="loader-leaf" :style="`--i:${i}`">🍃</span>
+      </div>
+      <div class="loader-content">
+        <div class="loader-camel-icon">
+          <svg viewBox="0 0 80 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <ellipse cx="24" cy="36" rx="18" ry="10" fill="#c8860a"/>
+            <ellipse cx="44" cy="30" rx="14" ry="9" fill="#c8860a"/>
+            <ellipse cx="34" cy="22" rx="6" ry="9" fill="#c8860a"/>
+            <ellipse cx="34" cy="14" rx="4" ry="6" fill="#c8860a"/>
+            <rect x="11" y="42" width="5" height="8" rx="2" fill="#b07208"/>
+            <rect x="20" y="44" width="5" height="6" rx="2" fill="#b07208"/>
+            <rect x="38" y="36" width="5" height="10" rx="2" fill="#b07208"/>
+            <rect x="47" y="38" width="5" height="8" rx="2" fill="#b07208"/>
+            <ellipse cx="37" cy="9" rx="3" ry="2.5" fill="#c8860a"/>
+            <circle cx="39" cy="8" r="1" fill="#3a2000"/>
+          </svg>
+        </div>
+        <div class="loader-brand">TOM'S GARDEN CARE</div>
+        <div class="loader-sub">Sheffield's Finest Camel Gardening Service</div>
+        <div class="loader-hedge-wrap">
+          <div class="loader-hedge-track">
+            <div class="loader-hedge-fill" :style="`width:${loadPct}%`" />
+            <div class="loader-hedge-spikes" :style="`width:${loadPct}%`" />
+          </div>
+        </div>
+        <div class="loader-label">{{ loadLabel }}</div>
+      </div>
+    </div>
+  </Transition>
+
+  <!-- Rotate-to-landscape prompt (touch + portrait) -->
+  <Transition name="loader-fade">
+    <div v-if="showRotate" class="rotate-overlay">
+      <div class="rotate-phone">📱</div>
+      <div class="rotate-title">ROTATE YOUR DEVICE</div>
+      <div class="rotate-sub">Camel Clipper plays best in landscape</div>
+    </div>
+  </Transition>
+
   </div>
 </template>
 
@@ -159,7 +236,11 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import Game from './Game';
 
-function letterboxRect() {
+const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+// Touch devices fill the whole screen; desktop keeps the framed 16:9 letterbox.
+function viewRect() {
+  if (isTouch) return { width: '100%', height: '100%' };
   const TARGET = 16 / 9;
   const vw = window.innerWidth, vh = window.innerHeight;
   if (vw / vh > TARGET) {
@@ -170,10 +251,13 @@ function letterboxRect() {
     return { width: w + 'px', height: h + 'px' };
   }
 }
-const wrapStyle = ref(letterboxRect());
+const wrapStyle  = ref(viewRect());
+const isPortrait = ref(window.innerHeight > window.innerWidth);
+const showRotate = computed(() => isTouch && isPortrait.value);
 
 const canvasRef   = ref<HTMLCanvasElement | null>(null);
 const gameState   = ref('MENU');
+const paused      = ref(false);
 const patience    = ref(1);
 const trimmed     = ref(0);
 const total       = ref(6);
@@ -189,10 +273,32 @@ const highestLevel  = ref(0)
 const bonusPopText  = ref('')
 const bonusPopKey   = ref(0)
 const csPhase       = ref('')
+const isLoading     = ref(true)
+const loadProgress  = ref(0)
+const loadTotal     = ref(1)
+
+interface LevelStats {
+  completedLevel: number
+  snips: number
+  multiplier: number
+  snipScore: number
+  timeBonus: number
+  levelTotal: number
+  runningTotal: number
+}
+const levelStats      = ref<LevelStats | null>(null)
+let _levelStartScore  = 0
+let _pendingSnipScore = 0
+
+const loadPct   = computed(() => loadTotal.value > 0 ? Math.round((loadProgress.value / loadTotal.value) * 100) : 0)
+const loadLabel = computed(() => isLoading.value && loadProgress.value === 0 ? 'Loading…' : loadProgress.value >= loadTotal.value ? 'Ready!' : `Loading… ${loadProgress.value} / ${loadTotal.value}`)
 
 let game: Game | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
-const _onResize = () => { wrapStyle.value = letterboxRect(); };
+const _onResize = () => {
+  wrapStyle.value  = viewRect();
+  isPortrait.value = window.innerHeight > window.innerWidth;
+};
 
 const pctStr = computed(() => `${Math.round(patience.value * 100)}%`);
 
@@ -336,13 +442,21 @@ onMounted(() => {
       gameState.value = s;
       if (s !== 'CUTSCENE') csPhase.value = '';
       if (s !== 'PLAYING') aimPos.value.visible = false;
+      if (s === 'PLAYING') {
+        _levelStartScore = score.value;
+        levelStats.value = null;
+      }
       if (s === 'WIN') {
         winMessage.value = pickWinSpeech();
       }
     },
+    onPause:           (p) => { paused.value = p; },
     onPatience:        (p) => { patience.value  = p; },
     onProgress:        (t, tot) => { trimmed.value = t; total.value = tot; },
-    onCoupleScreenPos: (x, y) => { couplePos.value = { x, y }; },
+    onCoupleScreenPos: (x, y) => {
+      // Sit the bubble directly over the couple; let it clip at the screen edge.
+      couplePos.value = { x, y };
+    },
     onAimScreenPos:    (x, y, snippable) => { aimPos.value = { x, y, snippable, visible: true }; },
     onLevel:           (l) => { level.value = l; },
     onLevelCleared:    (l) => {
@@ -351,16 +465,40 @@ onMounted(() => {
       levelClearedMessage.value = pickWinSpeech();
       if (toastTimer) clearTimeout(toastTimer);
       toastTimer = setTimeout(() => { clearedToast.value = null; }, 3200);
+      // Capture snip score before bonus is added (onScore fires after this)
+      _pendingSnipScore = score.value - _levelStartScore;
     },
     onScore:         (s) => { score.value = s; },
     onHighScore:     (hs, hl) => { hiScore.value = hs; highestLevel.value = hl; },
-    onLevelBonus:    (bonus, _total) => {
+    onLevelBonus:    (bonus, total) => {
       bonusPopText.value = '+' + bonus.toLocaleString() + ' TIME BONUS!';
       bonusPopKey.value++;
+      const lvl       = level.value;
+      const snipScore = _pendingSnipScore;
+      const snips     = lvl > 0 ? Math.round(snipScore / (100 * lvl)) : 0;
+      levelStats.value = {
+        completedLevel: lvl,
+        snips,
+        multiplier:     lvl,
+        snipScore,
+        timeBonus:      bonus,
+        levelTotal:     snipScore + bonus,
+        runningTotal:   total,
+      };
+    },
+    onLoadProgress: (loaded, tot) => {
+      loadProgress.value = loaded;
+      loadTotal.value    = tot;
+    },
+    onLoadComplete: () => {
+      loadProgress.value = loadTotal.value;
+      setTimeout(() => { isLoading.value = false; }, 600);
     },
   });
   game.start();
 });
+
+function resumeGame() { game?.resume(); }
 
 onUnmounted(() => {
   window.removeEventListener('resize', _onResize);
@@ -479,7 +617,11 @@ onUnmounted(() => {
 
 .speech-bubble {
   position: absolute;
-  max-width: 220px;
+  /* Definite content width so the bubble never collapses into a tall, thin
+     sliver when the couple wander near the screen edge (the cap keeps it on
+     small screens too). */
+  width: max-content;
+  max-width: min(220px, 56vw);
   /* Shift so the tail tip aligns to the projected couple position */
   transform: translate(-50%, calc(-100% - 16px));
   background: rgba(255,255,255,0.92);
@@ -492,7 +634,8 @@ onUnmounted(() => {
   text-align: center;
   transition: background 0.4s;
   animation: bubble-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-word;
 }
 .speech-bubble.urgent {
   background: rgba(255, 220, 220, 0.95);
@@ -919,9 +1062,17 @@ onUnmounted(() => {
   inset: 0;
   pointer-events: none;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 3%;
+}
+
+/* Mobile: top-centre, out of the action */
+.cs-overlay.cs-top {
+  align-items: flex-start;
   justify-content: center;
-  padding-bottom: 48px;
+  padding-right: 0;
+  padding-top: 4%;
 }
 
 .cs-card {
@@ -954,6 +1105,32 @@ onUnmounted(() => {
   margin-top: 4px;
 }
 
+.cs-recap {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,0.2);
+  font-family: system-ui, sans-serif;
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.6);
+}
+.cs-recap-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.75);
+  letter-spacing: 0.5px;
+}
+.cs-recap-val { color: #ffe9a8; }
+.cs-recap-total {
+  margin-top: 3px;
+  font-size: 14px;
+  color: #fff;
+}
+.cs-recap-total .cs-recap-val {
+  color: #c8a820;
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.5), 0 0 10px rgba(200,168,32,0.4);
+}
+
 .cs-skip {
   font-size: 11px;
   color: rgba(255,255,255,0.4);
@@ -971,5 +1148,282 @@ onUnmounted(() => {
 @keyframes cs-fall {
   from { opacity: 1; transform: translateY(0); }
   to   { opacity: 0; transform: translateY(-8px); }
+}
+
+/* ── Loading screen ───────────────────────────────────────── */
+.loader-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at 50% 60%, #1e4a1a 0%, #0a1f0a 70%, #040e04 100%);
+  overflow: hidden;
+}
+
+/* floating leaves */
+.loader-leaves {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.loader-leaf {
+  position: absolute;
+  bottom: -10%;
+  font-size: 22px;
+  opacity: 0;
+  left: calc((var(--i) - 1) * 8.5%);
+  animation: leaf-rise 4s ease-in-out calc(var(--i) * 0.35s) infinite;
+  filter: hue-rotate(calc(var(--i) * 15deg));
+}
+@keyframes leaf-rise {
+  0%   { transform: translateY(0) rotate(0deg);    opacity: 0; }
+  15%  { opacity: 0.7; }
+  85%  { opacity: 0.5; }
+  100% { transform: translateY(-110vh) rotate(360deg); opacity: 0; }
+}
+
+.loader-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 48px;
+  background: rgba(0,0,0,0.35);
+  border-radius: 20px;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 0 80px rgba(0,80,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+.loader-camel-icon svg {
+  width: 120px;
+  height: auto;
+  filter: drop-shadow(0 4px 16px rgba(200,134,10,0.6));
+  animation: camel-bob 2.4s ease-in-out infinite;
+}
+@keyframes camel-bob {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-6px); }
+}
+
+.loader-brand {
+  font-family: 'Luckiest Guy', 'Georgia', serif;
+  font-size: 28px;
+  letter-spacing: 4px;
+  color: #f5eed8;
+  text-shadow: 0 2px 12px rgba(200,134,10,0.5), 2px 2px 0 rgba(0,0,0,0.6);
+  margin-top: 4px;
+}
+.loader-sub {
+  font-size: 11px;
+  letter-spacing: 2.5px;
+  color: #7da86a;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+/* hedge-styled progress bar */
+.loader-hedge-wrap {
+  width: 280px;
+  margin-top: 4px;
+}
+.loader-hedge-track {
+  position: relative;
+  height: 22px;
+  background: #0d2b0a;
+  border-radius: 3px;
+  border: 2px solid #2a5c22;
+  overflow: visible;
+}
+.loader-hedge-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #2e7d32, #66bb6a 60%, #a5d6a7);
+  border-radius: 2px;
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* jagged hedge-top silhouette that pokes above the flat bar */
+.loader-hedge-spikes {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  height: 18px;
+  background: linear-gradient(90deg, #2e7d32, #66bb6a 60%, #a5d6a7);
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  clip-path: polygon(
+    0% 100%, 0% 70%,
+    2% 40%, 4% 62%, 6% 28%, 8% 50%, 10% 18%, 12% 44%, 14% 68%, 16% 30%,
+    18% 55%, 20% 22%, 22% 48%, 24% 72%, 26% 35%, 28% 58%, 30% 20%,
+    32% 46%, 34% 68%, 36% 28%, 38% 52%, 40% 15%, 42% 42%, 44% 65%,
+    46% 25%, 48% 50%, 50% 18%, 52% 44%, 54% 70%, 56% 30%, 58% 55%,
+    60% 22%, 62% 48%, 64% 72%, 66% 32%, 68% 58%, 70% 20%, 72% 45%,
+    74% 68%, 76% 28%, 78% 52%, 80% 16%, 82% 42%, 84% 65%, 86% 25%,
+    88% 50%, 90% 20%, 92% 46%, 94% 70%, 96% 32%, 98% 56%, 100% 70%,
+    100% 100%
+  );
+}
+.loader-label {
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: #6a9a5e;
+  margin-top: 2px;
+  min-height: 18px;
+}
+
+/* fade-out transition */
+.loader-fade-leave-active {
+  transition: opacity 0.8s ease;
+}
+.loader-fade-leave-to {
+  opacity: 0;
+}
+
+/* ── Mobile landscape compact modal ──────────────────────── */
+@media (max-height: 480px) {
+  .modal-card {
+    width: min(420px, 70vw);
+    padding: 14px 24px 12px;
+  }
+  .card-brand { gap: 2px; margin-bottom: 0; }
+  .brand-name { font-size: 15px; }
+  .brand-sub  { font-size: 10px; }
+  .card-rule  { margin: 6px 0; }
+  .game-title { font-size: clamp(22px, 4.5vw, 36px); margin: 0; }
+  .card-body  { font-size: 13px; line-height: 1.5; margin: 2px 0 4px; }
+  .controls-row { gap: 8px; font-size: 14px; margin: 2px 0; }
+  .ctrl-key   { font-size: 14px; padding: 2px 8px; }
+  .ctrl-label { font-size: 14px; }
+  .hi-score-row { margin: 4px 0 2px; }
+  .hi-score-val { font-size: 18px; }
+  .press-start  { font-size: 16px; margin-top: 2px; }
+  .modal-card::before,
+  .modal-card::after { font-size: 13px; top: 8px; }
+  /* Compact speech bubble on landscape phones so it sits clear of the play area. */
+  .speech-bubble {
+    font-size: 12px;
+    max-width: min(190px, 46vw);
+    padding: 7px 10px;
+  }
+}
+
+/* ── Pause overlay ────────────────────────────────────────── */
+.pause-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;            /* above the touch surface (50) and ⏸ button (60) */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 20, 6, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.pause-card {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(300px, 70vw);
+  padding: 24px 36px 22px;
+  text-align: center;
+  background: linear-gradient(168deg, #faf0d4 0%, #f2e3b0 55%, #ead590 100%);
+  border: 3px solid #8b5e26;
+  border-radius: 16px;
+  box-shadow:
+    0 0 0 1px rgba(200,160,60,0.25),
+    0 16px 48px rgba(0,0,0,0.55),
+    inset 0 1px 0 rgba(255,255,255,0.55);
+  font-family: 'Luckiest Guy', cursive;
+  color: #3a2a10;
+}
+.pause-glyph {
+  font-size: 30px;
+  color: #6b3d10;
+  line-height: 1;
+}
+.pause-title {
+  font-size: clamp(28px, 6vw, 40px);
+  color: #5c3317;
+  letter-spacing: 2px;
+  text-shadow: 2px 2px 0 rgba(139,94,42,0.3);
+  margin: 6px 0 0;
+}
+.pause-resume {
+  font-family: 'Luckiest Guy', cursive;
+  font-size: 22px;
+  letter-spacing: 1px;
+  color: #faf3df;
+  background: linear-gradient(180deg, #4a9a2a, #357a1c);
+  border: 2px solid #2a6014;
+  border-radius: 10px;
+  padding: 10px 36px;
+  margin: 6px 0 10px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 #245210, 0 5px 10px rgba(0,0,0,0.3);
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+.pause-resume:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 #245210, 0 2px 6px rgba(0,0,0,0.3);
+}
+.pause-hint {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 13px;
+  color: #8b6030;
+  letter-spacing: 0.5px;
+}
+.pause-fade-enter-active { animation: pause-rise 0.25s cubic-bezier(0.34, 1.25, 0.64, 1); }
+.pause-fade-leave-active { animation: pause-drop 0.2s ease-in forwards; }
+@keyframes pause-rise {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes pause-drop {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@media (max-height: 480px) {
+  .pause-card { width: min(360px, 60vw); padding: 14px 28px 12px; }
+  .pause-glyph { font-size: 22px; }
+  .pause-title { font-size: clamp(22px, 5vw, 30px); margin-top: 2px; }
+  .pause-resume { font-size: 18px; padding: 8px 28px; margin: 4px 0 6px; }
+  .pause-hint { font-size: 11px; }
+}
+
+/* ── Rotate-to-landscape prompt ───────────────────────────── */
+.rotate-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+  padding: 24px;
+  background: radial-gradient(ellipse at 50% 60%, #1e4a1a 0%, #0a1f0a 70%, #040e04 100%);
+  font-family: 'Luckiest Guy', cursive;
+  color: #f5eed8;
+}
+.rotate-phone {
+  font-size: 64px;
+  animation: rotate-tilt 1.8s ease-in-out infinite;
+}
+.rotate-title {
+  font-size: clamp(20px, 6vw, 30px);
+  letter-spacing: 1px;
+  text-shadow: 2px 2px 0 rgba(0,0,0,0.6);
+}
+.rotate-sub {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 14px;
+  color: #9ec48a;
+}
+@keyframes rotate-tilt {
+  0%, 100% { transform: rotate(0deg); }
+  50%       { transform: rotate(-90deg); }
 }
 </style>
