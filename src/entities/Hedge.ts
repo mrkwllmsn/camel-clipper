@@ -204,7 +204,7 @@ export class Hedge {
   }
 
   getSegmentAt(x: number): SegmentData | null {
-    const thresh = GAME_CONFIG.HEDGE.SEG_STEP * 0.6;
+    const thresh = GAME_CONFIG.HEDGE.SEG_STEP * 0.9;
     let best: SegmentData | null = null;
     let bestDist = thresh;
     for (const seg of this.segments) {
