@@ -91,6 +91,7 @@ export interface LevelConfig {
   patienceSeconds: number;  // base patience drain denominator
   perOvergrown:    number;  // extra drain rate per fully overgrown segment
   camelSpeed:      number;  // units/sec — ramps so a longer hedge stays coverable
+  maxRegrowing:    number;  // max segments allowed to regrow simultaneously
 }
 
 export function getLevelConfig(level: number): LevelConfig {
@@ -103,13 +104,14 @@ export function getLevelConfig(level: number): LevelConfig {
   return {
     count,
     overgrownCount:  Math.min(Math.round(count * frac), count - 1),
-    regrowDelay:     Math.max(12 - L * 0.5, 5),   // L1=12s → floors at 5s (~L14)
+    regrowDelay:     Math.max(5 - L * 0.2, 2),    // L1=5s → floors at 2s (~L15)
     regrowDuration:  Math.max(10 - L * 0.4, 5),   // L1=10s → floors at 5s (~L12)
     patienceSeconds: Math.max(75 - L * 4, 45),    // 75 → floors at 45s (~L8)
     // overgrownCount*perOvergrown = frac*(0.050 + 0.002L): independent of board
     // size, rises with both level and how full the board is (Beer Tapper spiral).
     perOvergrown:    (0.050 + L * 0.002) / count,
     camelSpeed:      Math.min(5.0 + L * 1.6, 13),
+    maxRegrowing:    level,  // L1=1, L2=2, ... grows with player progression
   };
 }
 

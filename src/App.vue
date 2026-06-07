@@ -193,20 +193,6 @@
         <span v-for="i in 12" :key="i" class="loader-leaf" :style="`--i:${i}`">🍃</span>
       </div>
       <div class="loader-content">
-        <div class="loader-camel-icon">
-          <svg viewBox="0 0 80 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <ellipse cx="24" cy="36" rx="18" ry="10" fill="#c8860a"/>
-            <ellipse cx="44" cy="30" rx="14" ry="9" fill="#c8860a"/>
-            <ellipse cx="34" cy="22" rx="6" ry="9" fill="#c8860a"/>
-            <ellipse cx="34" cy="14" rx="4" ry="6" fill="#c8860a"/>
-            <rect x="11" y="42" width="5" height="8" rx="2" fill="#b07208"/>
-            <rect x="20" y="44" width="5" height="6" rx="2" fill="#b07208"/>
-            <rect x="38" y="36" width="5" height="10" rx="2" fill="#b07208"/>
-            <rect x="47" y="38" width="5" height="8" rx="2" fill="#b07208"/>
-            <ellipse cx="37" cy="9" rx="3" ry="2.5" fill="#c8860a"/>
-            <circle cx="39" cy="8" r="1" fill="#3a2000"/>
-          </svg>
-        </div>
         <div class="loader-brand">TOM'S GARDEN CARE</div>
         <div class="loader-sub">Sheffield's Finest Camel Gardening Service</div>
         <div class="loader-hedge-wrap">
@@ -223,9 +209,11 @@
   <!-- Rotate-to-landscape prompt (touch + portrait) -->
   <Transition name="loader-fade">
     <div v-if="showRotate" class="rotate-overlay">
-      <div class="rotate-phone">📱</div>
-      <div class="rotate-title">ROTATE YOUR DEVICE</div>
-      <div class="rotate-sub">Camel Clipper plays best in landscape</div>
+        <div class="rotate-inner">
+            <div class="rotate-phone">📱</div>
+            <div class="rotate-title">ROTATE YOUR DEVICE</div>
+            <div class="rotate-sub">Camel Clipper plays best in landscape</div>
+        </div>
     </div>
   </Transition>
 
@@ -1393,6 +1381,22 @@ onUnmounted(() => {
 }
 
 /* ── Rotate-to-landscape prompt ───────────────────────────── */
+.rotate-inner {
+    padding:1rem;
+    border-radius:1rem;
+    background:rgba(255,255,255,0.3);
+    animation: float-modal 3s ease infinite; 
+    position:relative;
+    transition:all 0.2s ease;
+}
+@keyframes float-modal {
+  0% {
+  }
+  100% {
+  }
+
+}
+
 .rotate-overlay {
   position: absolute;
   inset: 0;
@@ -1404,7 +1408,8 @@ onUnmounted(() => {
   gap: 14px;
   text-align: center;
   padding: 24px;
-  background: radial-gradient(ellipse at 50% 60%, #1e4a1a 0%, #0a1f0a 70%, #040e04 100%);
+  background: url(images/portrait_hero.webp) no-repeat; 
+  background-size:cover;
   font-family: 'Luckiest Guy', cursive;
   color: #f5eed8;
 }
@@ -1413,14 +1418,15 @@ onUnmounted(() => {
   animation: rotate-tilt 1.8s ease-in-out infinite;
 }
 .rotate-title {
-  font-size: clamp(20px, 6vw, 30px);
+  font-size: clamp(1rem, 6vw, 2rem);
   letter-spacing: 1px;
-  text-shadow: 2px 2px 0 rgba(0,0,0,0.6);
+  text-shadow: 2px 2px 0 rgba(0,0,0,0.8);
+  margin-bottom:2rem;
 }
 .rotate-sub {
-  font-family: Georgia, 'Times New Roman', serif;
-  font-size: 14px;
-  color: #9ec48a;
+  font-size: 2rem;
+  color: #ffc400;
+  text-shadow: 2px 2px 0 rgba(0,0,0,0.8);
 }
 @keyframes rotate-tilt {
   0%, 100% { transform: rotate(0deg); }

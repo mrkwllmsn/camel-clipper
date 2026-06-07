@@ -43,6 +43,7 @@ export class Hedge {
   readonly startX:   number;   // center X of segment 0 (hedge auto-centered on 0)
   private _regrowDelay:    number;
   private _regrowDuration: number;
+  private _maxRegrowing:   number;
   private _t = 0;
 
   // Pool of organically perturbed blob geometries — avoids all blobs looking
@@ -75,6 +76,7 @@ export class Hedge {
     this.segments = [];
     this._regrowDelay    = level.regrowDelay;
     this._regrowDuration = level.regrowDuration;
+    this._maxRegrowing   = level.maxRegrowing;
 
     // Center any-length hedge on x=0 → camera/scenery math stays symmetric.
     this.startX = -((level.count - 1) * cfg.SEG_STEP) / 2;
@@ -201,7 +203,9 @@ export class Hedge {
         c.mesh.position.y += Math.cos(sway * 0.8 + c.swayPhase) * c.swayAmt * 0.5 * w;
       }
     }
-    seg.mat.color.lerpColors(_neatColor, _wildColor, w);
+    // Power curve on colour only: small w values read as much lighter so the
+    // player notices a segment starting to grow well before it's fully wild.
+    seg.mat.color.lerpColors(_neatColor, _wildColor, Math.pow(w, 0.35));
   }
 
   getSegmentAt(x: number): SegmentData | null {
@@ -249,9 +253,13 @@ export class Hedge {
         if (seg.regrowTimer > 0) {
           seg.regrowTimer -= dt;
           if (seg.regrowTimer <= 0) {
-            seg.regrowTimer = -1;
-            seg.isGrowing   = true;
-            seg.graceTimer  = 1.0;
+            const growing = this.segments.filter(s => s.isGrowing).length;
+            if (growing < this._maxRegrowing) {
+              seg.regrowTimer = -1;
+              seg.isGrowing   = true;
+              seg.graceTimer  = 1.0;
+            }
+            // else: leave regrowTimer at 0 and retry next tick when a slot frees up
           }
         }
         if (seg.isGrowing) {
@@ -267,9 +275,9 @@ export class Hedge {
         }
       }
 
-      // Ease displayed growth toward target — fast snap when trimming, the
-      // growth machine already paces the slow regrow.
-      const ease = targetW < seg.wDisp ? 10 : 4;     // snip springs back quickly
+      // Ease displayed growth toward target — fast snap when trimming, quicker
+      // track when growing so the colour shift is immediately noticeable.
+      const ease = targetW < seg.wDisp ? 10 : 8;
       seg.wDisp += (targetW - seg.wDisp) * Math.min(1, dt * ease);
       if (Math.abs(targetW - seg.wDisp) < 0.002) seg.wDisp = targetW;
 
