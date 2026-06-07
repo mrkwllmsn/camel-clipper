@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { createLowLodHouse } from '../utils/HouseGenerator';
+import { mulberry32 } from '../utils/SeededRNG';
 
 export type CutscenePhase =
   | 'pan'        // wide shot — Tom beside parked car at old garden
@@ -38,12 +40,17 @@ export class Cutscene {
   done = false;
   private _onLoaded: (() => void) | null = null;
 
-  constructor(roadStartX: number, onLoaded?: () => void) {
+  private _streetBrickMats: THREE.MeshLambertMaterial[] = [];
+  private _streetRoofMats:  THREE.MeshLambertMaterial[] = [];
+  private _streetWinMats:   THREE.MeshLambertMaterial[] = [];
+
+  constructor(roadStartX: number, level = 1, onLoaded?: () => void) {
     this.roadStartX = roadStartX;
     this._onLoaded  = onLoaded ?? null;
     this.group      = new THREE.Group();
 
-    this._buildBackground(roadStartX);
+    this._initStreetMats();
+    this._buildBackground(roadStartX, level);
 
     // _carModel is a child of _carGroup so we can rotate the model independently
     this._carModel.rotation.y = 0;   // car front faces −X (heading left on depart)
@@ -60,7 +67,7 @@ export class Cutscene {
 
   // ── Background scenery: hills + roadside trees to fill the horizon ──────────
 
-  private _buildBackground(startX: number): void {
+  private _buildBackground(startX: number, level: number): void {
     // Hills, extended ground and scattered trees now live in Game.ts as permanent
     // scene geometry so they're always visible (not just during cutscene).
     // Only the roadside kerb trees are cutscene-specific (they follow startX).
@@ -85,6 +92,81 @@ export class Cutscene {
       g.scale.setScalar(s);
       g.position.set(startX + ox, 0, ROAD_Z + 4.8);
       this.group.add(g);
+    }
+
+    this._buildRoadsideHouses(startX, level);
+  }
+
+  private _initStreetMats(): void {
+    const loader = new THREE.TextureLoader();
+    const base = import.meta.env.BASE_URL;
+    const texMat = (file: string, rx: number, ry: number, gain = 1, extra: THREE.MeshLambertMaterialParameters = {}) => {
+      const tex = loader.load(`${base}textures/${file}`);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.repeat.set(rx, ry);
+      return new THREE.MeshLambertMaterial({ map: tex, color: new THREE.Color(gain, gain, gain), ...extra });
+    };
+    this._streetBrickMats = [
+      texMat('bricks_512.png',     3, 2, 0.78),
+      texMat('bricks/bricks3.jpg', 3, 2, 1.55),
+      texMat('bricks/bricks4.jpg', 3, 2, 1.18),
+      texMat('bricks/bricks5.jpg', 3, 2, 1.22),
+      texMat('bricks/bricks6.jpg', 3, 2, 1.45),
+    ];
+    this._streetRoofMats = [
+      texMat('tiles1.jpg',  4, 3, 0.97, { side: THREE.DoubleSide }),
+      texMat('tiles2.webp', 4, 3, 1.62, { side: THREE.DoubleSide }),
+      texMat('tiles3.jpg',  4, 3, 1.65, { side: THREE.DoubleSide }),
+    ];
+    this._streetWinMats = [
+      new THREE.MeshLambertMaterial({ color: 0x88CCEE, emissive: 0x224433, emissiveIntensity: 0.4 }),
+      texMat('window1.jpg', 1, 1),
+    ];
+  }
+
+  // Houses on both sides of the road, spread across the 38-unit travel corridor.
+  // Far side (z = ROAD_Z+17): unrotated, front (−Z) naturally faces the road.
+  // Near side (z = ROAD_Z−14): rotated π, front (+Z) faces the road.
+  // Seeds are offset by level so each level looks like a different street.
+  private _buildRoadsideHouses(startX: number, level: number): void {
+    const scales = [0.85, 0.92, 0.88, 0.95, 0.90, 0.87];
+    const farSideOx  = [-12, -28, -44, -60, -76, -92];
+    const nearSideOx = [-20, -36, -52, -68, -84];
+
+    const farBase  = 1000 + level * 11;  // 11 apart so far/near seed ranges never collide
+    const nearBase = 1000 + level * 11 + 100;
+
+    const pickMats = (seed: number) => {
+      const r = mulberry32(seed);
+      return {
+        wallMat: this._streetBrickMats[Math.floor(r() * this._streetBrickMats.length)],
+        roofMat: this._streetRoofMats [Math.floor(r() * this._streetRoofMats.length)],
+        winMat:  this._streetWinMats  [Math.floor(r() * this._streetWinMats.length)],
+      };
+    };
+
+    for (let i = 0; i < farSideOx.length; i++) {
+      const seed  = farBase + i;
+      const house = createLowLodHouse(seed, pickMats(seed));
+      house.scale.setScalar(scales[i % scales.length]);
+      house.position.set(startX + farSideOx[i], 0, ROAD_Z + 17);
+      house.traverse((o) => {
+        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
+      });
+      this.group.add(house);
+    }
+
+    for (let i = 0; i < nearSideOx.length; i++) {
+      const seed  = nearBase + i;
+      const house = createLowLodHouse(seed, pickMats(seed));
+      house.scale.setScalar(scales[i % scales.length]);
+      house.rotation.y = Math.PI;
+      house.position.set(startX + nearSideOx[i], 0, ROAD_Z - 14);
+      house.traverse((o) => {
+        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
+      });
+      this.group.add(house);
     }
   }
 
@@ -215,5 +297,9 @@ export class Cutscene {
       const m = o as THREE.Mesh;
       if (m.isMesh) m.geometry.dispose();
     });
+    for (const mat of [...this._streetBrickMats, ...this._streetRoofMats, ...this._streetWinMats]) {
+      (mat.map as THREE.Texture | null)?.dispose();
+      mat.dispose();
+    }
   }
 }

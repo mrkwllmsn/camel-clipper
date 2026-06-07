@@ -95,7 +95,7 @@ export interface LevelConfig {
 
 export function getLevelConfig(level: number): LevelConfig {
   const L = Math.max(1, level) - 1;  // 0-based step
-  const count = Math.min(12 + L * 4, 40);
+  const count = Math.min(12 + Math.floor(L / 3) * 4, 40);
   // Difficulty keeps climbing past L8 (where count/speed cap out) via a rising
   // overgrown FRACTION, faster regrowth, and tighter patience — so the run never
   // plateaus. Spiral drain is normalized to the fraction overgrown (see below).

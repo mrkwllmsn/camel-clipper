@@ -146,6 +146,11 @@ export default class Game {
         if (this._cutscene) { this.scene.remove(this._cutscene.group); this._cutscene.dispose(); this._cutscene = null; }
         this._beginCutscene(this._level + 1);
       }
+      if (e.key === '2') {
+        if (this._cutscene) { this.scene.remove(this._cutscene.group); this._cutscene.dispose(); this._cutscene = null; }
+        this._startLevel(this._level + 1, true);
+        this._setState(GAME_STATES.PLAYING);
+      }
     };
     window.addEventListener('keydown', this._debugKeyHandler);
 
@@ -1138,7 +1143,7 @@ export default class Game {
     this._csLevelBuilt      = false;
     this._csPrevPhase       = '';
     this._csRoadStartX      = -(this.hedge.halfWidth + 2.5);
-    this._cutscene = new Cutscene(this._csRoadStartX);
+    this._cutscene = new Cutscene(this._csRoadStartX, nextLevel);
     this.scene.add(this._cutscene.group);
     this.camel.group.visible  = false;
     this.couple.group.visible = false;
