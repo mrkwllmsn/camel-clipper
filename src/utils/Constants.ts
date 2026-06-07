@@ -103,12 +103,12 @@ export function getLevelConfig(level: number): LevelConfig {
   return {
     count,
     overgrownCount:  Math.min(Math.round(count * frac), count - 1),
-    regrowDelay:     Math.max(20 - L * 0.7, 8),   // L1=20s → floors at 8s (~L17)
-    regrowDuration:  Math.max(14 - L * 0.5, 7),   // L1=14s → floors at 7s (~L14)
-    patienceSeconds: Math.max(100 - L * 4, 65),   // 100 → floors at 65s (~L9)
-    // overgrownCount*perOvergrown = frac*(0.035 + 0.0015L): independent of board
+    regrowDelay:     Math.max(12 - L * 0.5, 5),   // L1=12s → floors at 5s (~L14)
+    regrowDuration:  Math.max(10 - L * 0.4, 5),   // L1=10s → floors at 5s (~L12)
+    patienceSeconds: Math.max(75 - L * 4, 45),    // 75 → floors at 45s (~L8)
+    // overgrownCount*perOvergrown = frac*(0.050 + 0.002L): independent of board
     // size, rises with both level and how full the board is (Beer Tapper spiral).
-    perOvergrown:    (0.035 + L * 0.0015) / count,
+    perOvergrown:    (0.050 + L * 0.002) / count,
     camelSpeed:      Math.min(5.0 + L * 1.6, 13),
   };
 }

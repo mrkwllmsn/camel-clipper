@@ -24,6 +24,7 @@ export interface SegmentData {
   isGrowing:      boolean;   // in active growth phase — snippable early for a point
   growthProgress: number;    // 0→1 during isGrowing
   regrowTimer:    number;    // >0 = dormant countdown after snip; -1 = idle
+  graceTimer:     number;    // counts down from GRACE_PERIOD when growing starts; not snippable until 0
   wDisp:          number;    // displayed growth (smoothed toward target each frame)
   centerX:        number;
   index:          number;
@@ -100,7 +101,7 @@ export class Hedge {
       this.segments.push({
         group: segGroup, clumps, mat,
         isOvergrown, isGrowing: false,
-        growthProgress: 0, regrowTimer: -1,
+        growthProgress: 0, regrowTimer: -1, graceTimer: 0,
         wDisp: isOvergrown ? 1 : 0,
         centerX, index: i,
       });
@@ -227,11 +228,12 @@ export class Hedge {
     seg.isGrowing      = false;
     seg.growthProgress = 0;
     seg.regrowTimer    = -1;
+    seg.graceTimer     = 0;
     // wDisp eases back to 0 in update() for a satisfying "snap to neat".
   }
 
   isSnippable(seg: SegmentData): boolean {
-    return seg.isOvergrown || seg.isGrowing;
+    return seg.isOvergrown || (seg.isGrowing && seg.graceTimer <= 0);
   }
 
   update(dt: number): void {
@@ -249,9 +251,11 @@ export class Hedge {
           if (seg.regrowTimer <= 0) {
             seg.regrowTimer = -1;
             seg.isGrowing   = true;
+            seg.graceTimer  = 1.0;
           }
         }
         if (seg.isGrowing) {
+          if (seg.graceTimer > 0) seg.graceTimer = Math.max(0, seg.graceTimer - dt);
           seg.growthProgress = Math.min(1, seg.growthProgress + dt / this._regrowDuration);
           if (seg.growthProgress >= 1) {
             seg.isGrowing   = false;
