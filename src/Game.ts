@@ -10,8 +10,10 @@ import { createLowLodHouse } from './utils/HouseGenerator';
 import InputManager from './systems/InputManager';
 import GamepadManager from './systems/GamepadManager';
 import TouchManager from './systems/TouchManager';
-import { OutlinePass } from './systems/OutlinePass';
-import { AudioManager } from './systems/AudioManager';
+import { OutlinePass }      from './systems/OutlinePass';
+import { PostEffectChain }  from './systems/PostEffectChain';
+import { ShaderDebugPanel } from './systems/ShaderDebugPanel';
+import { AudioManager }     from './systems/AudioManager';
 import { Cutscene, CS_BEATS, ROAD_Z } from './entities/Cutscene';
 
 type CamPhase = 'menu' | 'pan-in' | 'playing' | 'admire' | 'cutscene' | 'win' | 'gameover';
@@ -43,10 +45,12 @@ export default class Game {
   private _rafId:       number;
   private _t:           number;
 
-  private renderer!: THREE.WebGLRenderer;
-  private scene!:    THREE.Scene;
-  private camera!:   THREE.PerspectiveCamera;
-  private _outline!: OutlinePass;
+  private renderer!:     THREE.WebGLRenderer;
+  private scene!:        THREE.Scene;
+  private camera!:       THREE.PerspectiveCamera;
+  private _outline!:     OutlinePass;
+  private _postChain!:   PostEffectChain;
+  private _shaderPanel!: ShaderDebugPanel;
 
   private _clouds: Array<{ obj: THREE.Object3D; speed: number }> = [];
 
@@ -143,6 +147,7 @@ export default class Game {
 
     // Debug: press 1 to preview the cutscene from any state
     this._debugKeyHandler = (e: KeyboardEvent) => {
+      if (e.key === 'F4') { this._shaderPanel.toggle(); return; }
       if (e.key === '1' && this.state !== GAME_STATES.CUTSCENE) {
         if (this._cutscene) { this.scene.remove(this._cutscene.group); this._cutscene.dispose(); this._cutscene = null; }
         this._beginCutscene(this._level + 1);
@@ -186,7 +191,9 @@ export default class Game {
     this.renderer.shadowMap.type      = THREE.PCFShadowMap;
     window.addEventListener('resize', () => this._onResize());
     window.addEventListener('orientationchange', () => this._onResize());
-    this._outline = new OutlinePass(this.renderer, 0.1, 300);
+    this._outline    = new OutlinePass(this.renderer, 0.1, 300);
+    this._postChain  = new PostEffectChain(this.renderer);
+    this._shaderPanel = new ShaderDebugPanel(this._postChain);
   }
 
   private _initScene(): void {
@@ -722,6 +729,7 @@ export default class Game {
     this.camera.aspect = this._viewAspect();
     this.camera.updateProjectionMatrix();
     this._outline.resize(w, h);
+    this._postChain.resize(w, h);
   }
 
   start(): void {
@@ -739,6 +747,8 @@ export default class Game {
     if (this._debugKeyHandler) window.removeEventListener('keydown', this._debugKeyHandler);
     this.audio.destroy();
     this._outline.dispose();
+    this._postChain.dispose();
+    this._shaderPanel.destroy();
     this.renderer.dispose();
   }
 
@@ -756,7 +766,12 @@ export default class Game {
     }
 
     this._renderUpdate(dt);
-    this._outline.render(this.scene, this.camera);
+    if (this._postChain.anyEnabled) {
+      this._outline.render(this.scene, this.camera, this._postChain.captureRT);
+      this._postChain.render(dt);
+    } else {
+      this._outline.render(this.scene, this.camera);
+    }
 
     if (this.callbacks.onCoupleScreenPos) {
       const ndc = this.couple.headWorld.clone().project(this.camera);
@@ -880,11 +895,11 @@ export default class Game {
       const t = cs.t;
 
       if (t < panEnd) {
-        // Slow drift — car + Tom in foreground, house/garden fills background
-        const p    = ss(t / panEnd);
-        const camX = rsx + 4 - p * 3;   // rsx+4 → rsx+1, gentle leftward pan
-        this.camera.position.set(camX, 4.0, 17);
-        this._camLookTgt.set(rsx - 2, 1.8, -1);  // looking through car toward house
+        // Close over-bonnet shot — camera sits at hood height, tracking camel walking in from right
+        const p = ss(t / panEnd);
+        const lookX = rsx + 6 - p * 4.5;  // pan from rsx+6 → rsx+1.5 as camel approaches
+        this.camera.position.set(rsx - 1.5, 2.2, ROAD_Z - 1.2);
+        this._camLookTgt.set(lookX, 1.0, ROAD_Z + 0.4);
         this.camera.lookAt(this._camLookTgt);
 
       } else if (t < getDinEnd) {
@@ -1215,6 +1230,8 @@ export default class Game {
 
   // Public resume — called by the HUD's RESUME button / backdrop tap.
   resume(): void { this._setPaused(false); }
+
+  toggleShaderPanel(): void { this._shaderPanel.toggle(); }
 
   private _setState(next: string): void {
     this.state = next;

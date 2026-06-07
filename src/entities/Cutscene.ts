@@ -61,8 +61,9 @@ export class Cutscene {
     this._carGroup.position.set(roadStartX, 0, ROAD_Z);
     this.group.add(this._carGroup);
 
-    // Standing camel beside car on the garden side (right / +X)
-    this._standingCamel.position.set(1.8, 0, 0.4);
+    // Standing camel starts far right, walks to car door during pan phase
+    this._standingCamel.position.set(7.0, 0, 0.4);
+    this._standingCamel.rotation.y = -Math.PI / 2;  // face toward car (-X direction)
     this._carGroup.add(this._standingCamel);
 
     void this._loadAssets();
@@ -240,7 +241,7 @@ export class Cutscene {
 
   private async _loadCamel(loader: GLTFLoader): Promise<void> {
     try {
-      const gltf  = await loader.loadAsync(`${import.meta.env.BASE_URL}models/camel_standing_decimated.glb`);
+      const gltf  = await loader.loadAsync(`${import.meta.env.BASE_URL}models/camel_standing_decimated_2.glb`);
       const model = gltf.scene;
       const box   = new THREE.Box3().setFromObject(model);
       const size  = box.getSize(new THREE.Vector3());
@@ -286,8 +287,18 @@ export class Cutscene {
 
   update(dt: number): void {
     this._t += dt;
-    const { getDinEnd, departEnd, turnEnd, returnEnd } = CS_BEATS;
+    const { panEnd, getDinEnd, departEnd, turnEnd, returnEnd } = CS_BEATS;
     const { roadStartX } = this;
+
+    // Camel walks to car during pan phase, bobbing up and down
+    if (this._t < panEnd) {
+      const p = SS(this._t / panEnd);
+      this._standingCamel.position.x = 7.0 - (7.0 - 1.8) * p;
+      this._standingCamel.position.y = Math.sin(this._t * 5.5) * 0.06;
+    } else if (this._t < getDinEnd) {
+      this._standingCamel.position.x = 1.8;
+      this._standingCamel.position.y = 0;
+    }
 
     if (this._t >= getDinEnd) {
       this._standingCamel.visible = false;

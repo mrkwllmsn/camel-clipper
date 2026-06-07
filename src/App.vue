@@ -100,6 +100,7 @@
         <div class="pause-title">PAUSED</div>
         <div class="card-rule"><span>❧</span></div>
         <button class="pause-resume" @pointerdown.stop="resumeGame">RESUME</button>
+        <button class="pause-shaders" @pointerdown.stop="openShaders">SHADERS</button>
         <div class="pause-hint">{{ isTouch ? 'tap anywhere to resume' : 'press ESC to resume' }}</div>
       </div>
     </div>
@@ -487,6 +488,7 @@ onMounted(() => {
 });
 
 function resumeGame() { game?.resume(); }
+function openShaders() { game?.toggleShaderPanel(); }
 
 onUnmounted(() => {
   window.removeEventListener('resize', _onResize);
@@ -1355,6 +1357,24 @@ onUnmounted(() => {
 .pause-resume:active {
   transform: translateY(3px);
   box-shadow: 0 0 0 #245210, 0 2px 6px rgba(0,0,0,0.3);
+}
+.pause-shaders {
+  font-family: 'Luckiest Guy', cursive;
+  font-size: 14px;
+  letter-spacing: 1px;
+  color: #faf3df;
+  background: linear-gradient(180deg, #7a6030, #5a4520);
+  border: 2px solid #3a2c10;
+  border-radius: 8px;
+  padding: 6px 20px;
+  margin: 0 0 8px;
+  cursor: pointer;
+  box-shadow: 0 2px 0 #2a1c08, 0 4px 8px rgba(0,0,0,0.25);
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+.pause-shaders:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 #2a1c08, 0 2px 4px rgba(0,0,0,0.25);
 }
 .pause-hint {
   font-family: Georgia, 'Times New Roman', serif;

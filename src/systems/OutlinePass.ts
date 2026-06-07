@@ -132,7 +132,7 @@ export class OutlinePass {
     this._quadScene.add(quad);
   }
 
-  render(scene: THREE.Scene, camera: THREE.Camera): void {
+  render(scene: THREE.Scene, camera: THREE.Camera, outputRT: THREE.WebGLRenderTarget | null = null): void {
     const r = this._renderer;
 
     // Pass 1 — scene colour + depth
@@ -146,8 +146,8 @@ export class OutlinePass {
     r.render(scene, camera);
     scene.overrideMaterial = prev;
 
-    // Pass 3 — outline composite to canvas
-    r.setRenderTarget(null);
+    // Pass 3 — outline composite to canvas or supplied output RT
+    r.setRenderTarget(outputRT);
     r.render(this._quadScene, this._quadCam);
   }
 
