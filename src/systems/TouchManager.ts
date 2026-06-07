@@ -11,7 +11,20 @@ import type { InputState } from '../utils/Constants';
  * Movement is relative to where the finger first landed, so it works as an
  * invisible thumb-stick: push left of the start point to go left, right to go
  * right, hold to keep moving, release to stop.
+ *
+ * Multi-touch: every finger is tracked independently. One finger owns movement
+ * (the first one that drags past the slop); any *other* finger can tap to snip
+ * at the same time, so you can hold a slide with the thumb and spam snips with
+ * the index finger. Taps queue up — each applyTo() fires one — so rapid double
+ * taps register even when they land inside a single frame.
  */
+interface Touch {
+  startX: number;
+  startY: number;
+  startT: number;
+  moved:  boolean;
+}
+
 export default class TouchManager {
   moveX:      number;
   moveY:      number;
@@ -26,12 +39,12 @@ export default class TouchManager {
   private readonly _tapSlop = 12;
   private readonly _tapMaxMs = 300;
 
-  private _dragId:    number | null;
-  private _startX:    number;
-  private _startY:    number;
-  private _startT:    number;
-  private _moved:     boolean;
-  private _pendingTap: boolean;
+  // All fingers currently down on the surface, keyed by pointerId.
+  private _touches = new Map<number, Touch>();
+  // The finger that currently owns horizontal movement (null = none dragging).
+  private _moveId: number | null;
+  // Buffered taps awaiting consumption by applyTo() — one fires per frame.
+  private _pendingTaps: number;
 
   private surface!: HTMLElement;
   private pauseBtn!: HTMLElement;
@@ -42,12 +55,8 @@ export default class TouchManager {
     this.launch     = false;
     this.pause      = false;
 
-    this._dragId     = null;
-    this._startX     = 0;
-    this._startY     = 0;
-    this._startT     = 0;
-    this._moved      = false;
-    this._pendingTap = false;
+    this._moveId       = null;
+    this._pendingTaps  = 0;
 
     this.enabled = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
     if (!this.enabled) return;
@@ -107,35 +116,45 @@ export default class TouchManager {
 
   private _bind(): void {
     this.surface.addEventListener('pointerdown', (e) => {
-      if (this._dragId !== null) return;       // ignore extra fingers
       e.preventDefault();
-      this._dragId = e.pointerId;
-      this._startX = e.clientX;
-      this._startY = e.clientY;
-      this._startT = e.timeStamp;
-      this._moved  = false;
+      this._touches.set(e.pointerId, {
+        startX: e.clientX, startY: e.clientY, startT: e.timeStamp, moved: false,
+      });
       this.actionHeld = true;
+      // Capture per-pointer so each finger's moves/ups route here even if it
+      // drifts off the surface — essential for reliable multi-touch.
       this.surface.setPointerCapture?.(e.pointerId);
     });
 
     this.surface.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== this._dragId) return;
-      const dx = e.clientX - this._startX;
-      const dy = e.clientY - this._startY;
-      if (Math.abs(dx) > this._tapSlop || Math.abs(dy) > this._tapSlop) this._moved = true;
+      const t = this._touches.get(e.pointerId);
+      if (!t) return;
+      const dx = e.clientX - t.startX;
+      const dy = e.clientY - t.startY;
+      if (Math.abs(dx) > this._tapSlop || Math.abs(dy) > this._tapSlop) t.moved = true;
+      // First finger to drag past the slop claims movement; others stay taps.
+      if (t.moved && this._moveId === null) this._moveId = e.pointerId;
+      if (e.pointerId !== this._moveId) return;
       // Clamp to ±1; deadzone equal to the tap slop so taps don't nudge.
       const eff = Math.abs(dx) < this._tapSlop ? 0 : dx;
       this.moveX = Math.max(-1, Math.min(1, eff / this._moveRadius));
     });
 
     const end = (e: PointerEvent) => {
-      if (e.pointerId !== this._dragId) return;
-      const quick = (e.timeStamp - this._startT) <= this._tapMaxMs;
-      if (!this._moved && quick) this._pendingTap = true;   // it was a tap
-      this._dragId = null;
-      this._moved  = false;
-      this.moveX   = 0;
-      this.actionHeld = false;
+      const t = this._touches.get(e.pointerId);
+      if (!t) return;
+      const quick = (e.timeStamp - t.startT) <= this._tapMaxMs;
+      if (!t.moved && quick) this._pendingTaps++;   // it was a tap → queue a snip
+      this._touches.delete(e.pointerId);
+      if (this._touches.size === 0) this.actionHeld = false;
+      if (e.pointerId === this._moveId) {
+        // Hand movement to another finger that's already dragging, if any.
+        this._moveId = null;
+        this.moveX   = 0;
+        for (const [id, o] of this._touches) {
+          if (o.moved) { this._moveId = id; break; }
+        }
+      }
     };
     this.surface.addEventListener('pointerup',     end);
     this.surface.addEventListener('pointercancel', end);
@@ -167,10 +186,10 @@ export default class TouchManager {
   setPaused(paused: boolean): void {
     if (!this.enabled) return;
     this.surface.style.pointerEvents = paused ? 'none' : 'auto';
-    // Drop any in-flight drag/tap so resuming doesn't fire a stale action.
-    this._dragId = null;
-    this._moved = false;
-    this._pendingTap = false;
+    // Drop any in-flight drags/taps so resuming doesn't fire a stale action.
+    this._touches.clear();
+    this._moveId = null;
+    this._pendingTaps = 0;
     this.moveX = 0;
     this.actionHeld = false;
   }
@@ -179,10 +198,12 @@ export default class TouchManager {
     if (!this.enabled) return;
     if (this.moveX !== 0) state.moveX = this.moveX;
     if (this.actionHeld) state.actionHeld = true;
-    // A tap fires the one-shot action (snip / start / restart / skip).
-    if (this._pendingTap) {
-      state.launch     = true;
-      this._pendingTap = false;
+    // A tap fires the one-shot action (snip / start / restart / skip). Taps are
+    // buffered, so spamming the snip finger while the other drags still lands
+    // every press — one per frame.
+    if (this._pendingTaps > 0) {
+      state.launch = true;
+      this._pendingTaps--;
     }
     if (this.pause) { state.pause = true; this.pause = false; }
   }
