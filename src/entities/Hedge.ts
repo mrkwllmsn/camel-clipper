@@ -313,6 +313,20 @@ export class Hedge {
   get rightX():    number { return this.startX + (this.segments.length - 1) * GAME_CONFIG.HEDGE.SEG_STEP; }
   get halfWidth(): number { return (this.segments.length - 1) * GAME_CONFIG.HEDGE.SEG_STEP / 2; }
 
+  // Freeze all growth — cancel timers, snap every segment to neat. Call on level-clear
+  // so no bush pops back up during the admire / finish animation.
+  freeze(): void {
+    for (const seg of this.segments) {
+      seg.isOvergrown    = false;
+      seg.isGrowing      = false;
+      seg.growthProgress = 0;
+      seg.regrowTimer    = -1;
+      seg.graceTimer     = 0;
+      seg.wDisp          = 0;
+    }
+    for (const seg of this.segments) this._applyPose(seg);
+  }
+
   // Release GPU resources for this hedge's segment materials (geometry is shared
   // and static, so it is intentionally NOT disposed here).
   dispose(): void {

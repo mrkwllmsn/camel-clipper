@@ -1248,6 +1248,9 @@ export default class Game {
     this._camPhase = 'admire';
     this._camT     = 0;
 
+    // Lock the hedge — no segment should regrow during the finish animation.
+    this.hedge.freeze();
+
     // Confetti of clippings along the freshly trimmed hedge.
     const segs = this.hedge.segments;
     for (let i = 0; i < segs.length; i += 2) {
