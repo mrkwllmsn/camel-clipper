@@ -5,7 +5,7 @@
 Hedge-trimming arcade game. You play as Tom the Camel, perched on a ladder, sliding left and right to snip overgrown hedge sections before the old couple's patience runs out.
 Unlock better tools as you progress. Try to get the LASER SHEARS! 
 
-![Camel Clipper screenshot](camelClipper/public/images/screenshot1.webp)
+![Camel Clipper screenshot](/public/images/screenshot1.webp)
 
 > *Tom's Garden Care — Sheffield's Finest Camel Gardening Service*
 
