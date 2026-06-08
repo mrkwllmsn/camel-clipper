@@ -68,6 +68,8 @@ export default class Game {
   private _houseBrickMats?: THREE.MeshLambertMaterial[];
   private _houseRoofMats?:  THREE.MeshLambertMaterial[];
   private _houseWinMats?:   THREE.MeshLambertMaterial[];
+  private _floorMats?:      THREE.MeshStandardMaterial[];
+  private _groundMesh?:     THREE.Mesh;
 
   // Camera animation
   private _camPhase: CamPhase = 'menu';
@@ -262,31 +264,15 @@ export default class Game {
     this.scene.add(grass);
 
     // Stone patio — a strip in front of the hedge where the camel works.
-    // Much smaller than the lawn so most of the ground reads as grass.
-    const floorTex = loader.load(`${import.meta.env.BASE_URL}textures/huge_floor_1.jpg`);
-    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
-    floorTex.repeat.set(20, 2);
-    // Height map for relief: stones are white (high), mortar black (low).
-    // Use as a bumpMap (per-pixel normal shading) instead of a displacementMap —
-    // displacement needs more verts per stone than is practical, and under-
-    // tessellation aliases into smooth rolling undulations. Bump has no such limit.
-    const floorBump = loader.load(`${import.meta.env.BASE_URL}textures/huge_floor_black_low.jpg`);
-    floorBump.wrapS = floorBump.wrapT = THREE.RepeatWrapping;
-    floorBump.repeat.set(20, 2);
-    const ground = new THREE.Mesh(
+    // Material is swapped each level from _floorMats; placeholder until first level starts.
+    this._groundMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(120, 8),
-      new THREE.MeshStandardMaterial({
-        map: floorTex,
-        bumpMap: floorBump,
-        bumpScale: 2.5,
-        roughness: 0.9,
-        metalness: 0.0,
-      }),
+      new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.0 }),
     );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set(0, 0.01, 1.5); // lifted to avoid z-fighting with grass
-    ground.receiveShadow = true;
-    this.scene.add(ground);
+    this._groundMesh.rotation.x = -Math.PI / 2;
+    this._groundMesh.position.set(0, 0.01, 1.5); // lifted to avoid z-fighting with grass
+    this._groundMesh.receiveShadow = true;
+    this.scene.add(this._groundMesh);
 
     this.scene.add(this._decorGroup);
     this._buildStaticScenery();
@@ -302,7 +288,7 @@ export default class Game {
     // Build a flat ribbon mesh from arc-length-spaced samples.
     // offA / offB are signed perpendicular distances from road centre:
     //   positive = far/+Z side (CW from tangent), negative = near/−Z side.
-    const buildRibbon = (offA: number, offB: number, y: number, color: number) => {
+    const buildRibbon = (offA: number, offB: number, y: number, mat: THREE.Material | number) => {
       const verts: number[] = [], uvs: number[] = [], inds: number[] = [];
       for (let i = 0; i <= N; i++) {
         const p    = pts[i];
@@ -324,26 +310,49 @@ export default class Game {
       geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,   2));
       geo.setIndex(inds);
       geo.computeVertexNormals();
-      const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color }));
+      const mesh = new THREE.Mesh(geo, mat instanceof THREE.Material ? mat : new THREE.MeshLambertMaterial({ color: mat }));
       mesh.receiveShadow = true;
       this.scene.add(mesh);
     };
 
-    // Road surface: near edge (−3.5) to far edge (+3.5)
-    buildRibbon(-3.5, 3.5, 0.013, 0x484848);
+    // Road surface: textured with road.jpg, tiling along the road length
+    const roadTex = new THREE.TextureLoader().load(`${import.meta.env.BASE_URL}textures/road.jpg`);
+    roadTex.wrapS = roadTex.wrapT = THREE.RepeatWrapping;
+    roadTex.colorSpace = THREE.SRGBColorSpace;
+    roadTex.repeat.set(4, 80);
+    buildRibbon(-3.78, 3.78, 0.013, new THREE.MeshLambertMaterial({ map: roadTex }));
 
     // Far kerb: road edge (+3.5) to outer edge (+3.78), raised to y=0.07
     buildRibbon(3.5, 3.78, 0.07, 0xbbbbbb);
     // Near kerb: outer edge (−3.78) to road edge (−3.5)
     buildRibbon(-3.78, -3.5, 0.07, 0xbbbbbb);
 
-    // ── Centre-line dashes — straight section only ─────────────────────────
-    const dashMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-    for (let x = ROAD_BEND_START_X + 2; x < ROAD_BEND_END_X; x += 4.2) {
-      const d = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 0.13), dashMat);
-      d.rotation.x = -Math.PI / 2;
-      d.position.set(x, 0.017, ROAD_Z);
-      this.scene.add(d);
+    // ── Centre-line dashes — full curve, arc-length spaced ─────────────────
+    const dashMat  = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    const dashLen  = 2.1;
+    const dashGap  = 2.1;   // gap between dashes; period = 4.2
+    let   arcAcc   = 0;
+    let   nextMid  = dashLen / 2;   // arc length at which to place next dash centre
+    let   inDash   = true;          // alternate dash / gap
+    for (let i = 1; i <= N; i++) {
+      const p    = pts[i];
+      const prev = pts[i - 1];
+      const dx   = p.x - prev.x,  dz = p.y - prev.y;
+      arcAcc += Math.sqrt(dx * dx + dz * dz);
+      if (arcAcc >= nextMid) {
+        if (inDash) {
+          const pn = pts[Math.min(i + 1, N)];
+          const pp = pts[Math.max(i - 1, 0)];
+          const tx = pn.x - pp.x,  tz = pn.y - pp.y;
+          const tl = Math.sqrt(tx * tx + tz * tz) || 1;
+          const d  = new THREE.Mesh(new THREE.PlaneGeometry(dashLen, 0.13), dashMat);
+          d.rotation.set(-Math.PI / 2, Math.atan2(-tz, tx), 0, 'YXZ');
+          d.position.set(p.x, 0.028, p.y);
+          this.scene.add(d);
+        }
+        nextMid += inDash ? dashGap : dashLen;
+        inDash = !inDash;
+      }
     }
   }
 
@@ -551,10 +560,39 @@ export default class Game {
       ];
     }
 
+    // ── Patio floor variant pool — built once, swapped per level ─────────────
+    // Each entry: [colorFile, repX, repY, bumpFile?]
+    if (!this._floorMats) {
+      const floorConfigs: [string, number, number, string?][] = [
+        ['floors/huge_floor_1.jpg',   20, 4, 'floors/huge_floor_black_low.jpg'],
+        ['floors/brick_floor.jpg',    20, 2],
+        ['floors/floor_patio.jpg',    20, 2],
+        ['floors/paving_stone.jpg',   30, 2],
+        ['floors/stones_floor.jpg',   24, 2],
+      ];
+      this._floorMats = floorConfigs.map(([colorFile, repX, repY, bumpFile]) => {
+        const tex = loader.load(`${import.meta.env.BASE_URL}textures/${colorFile}`);
+        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.repeat.set(repX, repY);
+        const params: THREE.MeshStandardMaterialParameters = { map: tex, roughness: 0.9, metalness: 0.0 };
+        if (bumpFile) {
+          const bump = loader.load(`${import.meta.env.BASE_URL}textures/${bumpFile}`);
+          bump.wrapS = bump.wrapT = THREE.RepeatWrapping;
+          bump.repeat.set(repX, repY);
+          params.bumpMap = bump;
+          params.bumpScale = 2.5;
+        }
+        return new THREE.MeshStandardMaterial(params);
+      });
+    }
+
     // ── Procedural house (unique per level, deterministic from level number) ──
     // Deterministic variant pick per level (distinct salts → independent choices).
     const pickVariant = <T>(arr: T[], salt: number): T =>
       arr[Math.abs(Math.imul(this._level + salt, 2654435761)) % arr.length];
+
+    if (this._groundMesh) this._groundMesh.material = pickVariant(this._floorMats, 0x4444);
     const houseScale = 1.4;
     const house = createLowLodHouse(this._level, {
       wallMat: pickVariant(this._houseBrickMats, 0x1111),
