@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { createLowLodHouse } from '../utils/HouseGenerator';
 import { mulberry32 } from '../utils/SeededRNG';
+import { makeRoadCurve, roadSidePlacement } from '../utils/RoadPath';
 
 export type CutscenePhase =
   | 'pan'        // wide shot — Tom beside parked car at old garden
@@ -75,6 +76,8 @@ export class Cutscene {
     // Hills, extended ground and scattered trees now live in Game.ts as permanent
     // scene geometry so they're always visible (not just during cutscene).
     // Only the roadside kerb trees are cutscene-specific (they follow startX).
+    const curve   = makeRoadCurve();
+    const samples = curve.getSpacedPoints(500);
     const trunkMat   = new THREE.MeshLambertMaterial({ color: 0x5c3a1a });
     const leafPalette = [0x2d6e22, 0x3a7a2a, 0x2a6020, 0x4a8a30, 0x3d7825];
     const roadsideDefs = [
@@ -94,11 +97,12 @@ export class Cutscene {
       leaves.position.y = 2.5;
       g.add(leaves);
       g.scale.setScalar(s);
-      g.position.set(startX + ox, 0, ROAD_Z + 4.8);
+      const { x, z } = roadSidePlacement(samples, startX + ox, 4.8);
+      g.position.set(x, 0, z);
       this.group.add(g);
     }
 
-    this._buildRoadsideHouses(startX, level);
+    this._buildRoadsideHouses(startX, level, samples);
   }
 
   private _initStreetMats(): void {
@@ -133,17 +137,18 @@ export class Cutscene {
   // Far side (z = ROAD_Z+17): unrotated, front (−Z) naturally faces the road.
   // Near side (z = ROAD_Z−14): rotated π, front (+Z) faces the road.
   // Seeds are offset by level so each level looks like a different street.
-  private _buildRoadsideHouses(startX: number, level: number): void {
+  private _buildRoadsideHouses(startX: number, level: number, samples: THREE.Vector2[]): void {
     const scales = [0.85, 0.92, 0.88, 0.95, 0.90, 0.87];
-    const farSideOx  = [-12, -28, -44, -60, -76, -92];
-    const nearSideOx = [-20, -36, -52, -68, -84];
-    const farRightOx  = [24, 40, 56, 72];
-    const nearRightOx = [30, 46, 62];
+    // Straight section spacing ~16, bend lead-in + curve spacing ~6
+    const farSideOx   = [-12, -28, -44,   -50, -56, -62, -68, -74, -80, -86, -92, -98];
+    const nearSideOx  = [-20, -36,        -48, -54, -60, -66, -72, -78, -84, -90, -96];
+    const farRightOx  = [ 24,  40,  56,    62,  68,  74,  80,  86,  92,  98, 104];
+    const nearRightOx = [ 30,  46,         56,  62,  68,  74,  80,  86,  92,  98];
 
-    const farBase      = 1000 + level * 11;
-    const nearBase     = 1000 + level * 11 + 100;
-    const farRightBase = 1000 + level * 11 + 200;
-    const nearRightBase= 1000 + level * 11 + 300;
+    const farBase       = 1000 + level * 11;
+    const nearBase      = 1000 + level * 11 + 100;
+    const farRightBase  = 1000 + level * 11 + 200;
+    const nearRightBase = 1000 + level * 11 + 300;
 
     const pickMats = (seed: number) => {
       const r = mulberry32(seed);
@@ -154,51 +159,23 @@ export class Cutscene {
       };
     };
 
-    for (let i = 0; i < farSideOx.length; i++) {
-      const seed  = farBase + i;
+    const addHouse = (seed: number, scale: number, worldX: number, side: number) => {
       const house = createLowLodHouse(seed, pickMats(seed));
-      house.scale.setScalar(scales[i % scales.length]);
-      house.position.set(startX + farSideOx[i], 0, ROAD_Z + 17);
+      house.scale.setScalar(scale);
+      const { x, z, rotY } = roadSidePlacement(samples, worldX, side);
+      house.position.set(x, 0, z);
+      house.rotation.y = rotY;
       house.traverse((o) => {
         if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
       });
       this.streetGroup.add(house);
-    }
+    };
 
-    for (let i = 0; i < nearSideOx.length; i++) {
-      const seed  = nearBase + i;
-      const house = createLowLodHouse(seed, pickMats(seed));
-      house.scale.setScalar(scales[i % scales.length]);
-      house.rotation.y = Math.PI;
-      house.position.set(startX + nearSideOx[i], 0, ROAD_Z - 14);
-      house.traverse((o) => {
-        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
-      });
-      this.streetGroup.add(house);
-    }
-
-    for (let i = 0; i < farRightOx.length; i++) {
-      const seed  = farRightBase + i;
-      const house = createLowLodHouse(seed, pickMats(seed));
-      house.scale.setScalar(scales[i % scales.length]);
-      house.position.set(startX + farRightOx[i], 0, ROAD_Z + 17);
-      house.traverse((o) => {
-        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
-      });
-      this.streetGroup.add(house);
-    }
-
-    for (let i = 0; i < nearRightOx.length; i++) {
-      const seed  = nearRightBase + i;
-      const house = createLowLodHouse(seed, pickMats(seed));
-      house.scale.setScalar(scales[i % scales.length]);
-      house.rotation.y = Math.PI;
-      house.position.set(startX + nearRightOx[i], 0, ROAD_Z - 14);
-      house.traverse((o) => {
-        if (o instanceof THREE.Mesh) { o.castShadow = true; o.receiveShadow = true; }
-      });
-      this.streetGroup.add(house);
-    }
+    for (let i = 0; i < farSideOx.length;   i++) addHouse(farBase   + i, scales[i % scales.length], startX + farSideOx[i],   17);
+    for (let i = 0; i < nearSideOx.length;  i++) addHouse(nearBase  + i, scales[i % scales.length], startX + nearSideOx[i], -14);
+    // Right-side houses are always in the straight section — no curve adjustment needed
+    for (let i = 0; i < farRightOx.length;  i++) addHouse(farRightBase  + i, scales[i % scales.length], startX + farRightOx[i],   17);
+    for (let i = 0; i < nearRightOx.length; i++) addHouse(nearRightBase + i, scales[i % scales.length], startX + nearRightOx[i], -14);
   }
 
   // ── GLB loading ──────────────────────────────────────────────────────────

@@ -140,11 +140,15 @@ export class OutlinePass {
     r.render(scene, camera);
 
     // Pass 2 — view-space normals (Sky dome renders as flat grey — harmless)
+    // Layer 1 holds detail meshes (window frames, glass, ledges) whose bottom faces
+    // would cause false normal edges; exclude them from this pass only.
+    camera.layers.disable(1);
     const prev = scene.overrideMaterial;
     scene.overrideMaterial = this._normalMat;
     r.setRenderTarget(this._normalRT);
     r.render(scene, camera);
     scene.overrideMaterial = prev;
+    camera.layers.enable(1);
 
     // Pass 3 — outline composite to canvas or supplied output RT
     r.setRenderTarget(outputRT);

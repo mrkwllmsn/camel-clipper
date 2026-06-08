@@ -72,9 +72,11 @@ function addWindow(
 ) {
   const frame = new THREE.Mesh(new THREE.BoxGeometry(w + 0.14, h + 0.14, 0.08), frameMat);
   frame.position.set(x, y, z + 0.04);
+  frame.layers.set(1);
   group.add(frame);
   const glass = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.06), winMat);
   glass.position.set(x, y, z);
+  glass.layers.set(1);
   group.add(glass);
 }
 
@@ -275,6 +277,7 @@ export function createLowLodHouse(seed: number, opts: HouseOpts = {}): THREE.Gro
       new THREE.MeshLambertMaterial({ color: 0xffffff }),
     );
     ledge.position.y = H1;
+    ledge.layers.set(1);
     group.add(ledge);
 
     const roof = new THREE.Mesh(makeGabledRoof(W, D, H, RH), roofMat);
@@ -324,6 +327,7 @@ export function createLowLodHouse(seed: number, opts: HouseOpts = {}): THREE.Gro
     for (const fy of [FL, FL * 2]) {
       const ledge = new THREE.Mesh(new THREE.BoxGeometry(W + 0.08, 0.14, D + 0.08), ledgeMat);
       ledge.position.y = fy;
+      ledge.layers.set(1);
       group.add(ledge);
     }
 

@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
-import { GAME_CONFIG, GAME_STATES, COLORS, getMaterial, getLevelConfig, type GameCallbacks } from './utils/Constants';
+import { GAME_CONFIG, GAME_STATES, COLORS, getMaterial, getLevelConfig, TOOL_NAMES, type GameCallbacks } from './utils/Constants';
 import { Hedge } from './entities/Hedge';
 import { Camel } from './entities/Camel';
 import { OldCouple } from './entities/OldCouple';
 import { LeafParticles } from './systems/LeafParticles';
+import { LaserParticles } from './systems/LaserParticles';
 import { makeGnome, makeBench, makeBirdbath, makeWheelbarrow, makeShrub, makeFlowerbed, makeScatterFlower, buildTreeInstances } from './entities/Decor';
 import { createLowLodHouse } from './utils/HouseGenerator';
 import InputManager from './systems/InputManager';
@@ -15,6 +16,7 @@ import { PostEffectChain }  from './systems/PostEffectChain';
 import { ShaderDebugPanel } from './systems/ShaderDebugPanel';
 import { AudioManager }     from './systems/AudioManager';
 import { Cutscene, CS_BEATS, ROAD_Z } from './entities/Cutscene';
+import { makeRoadCurve, ROAD_BEND_START_X, ROAD_BEND_END_X } from './utils/RoadPath';
 
 type CamPhase = 'menu' | 'pan-in' | 'playing' | 'admire' | 'cutscene' | 'win' | 'gameover';
 
@@ -110,11 +112,17 @@ export default class Game {
   private camel!:  Camel;
   private couple!: OldCouple;
   private leaves!: LeafParticles;
+  private _laser!: LaserParticles;
+  private _laserT  = 0;  // render-rate accumulator for sight beam pulsing
 
   private _snipOffset   = -1.5;
   private _aimX         = 0;
   private _aimSnippable = false;
   private _aimDot!:   THREE.Mesh;
+
+  private _toolTier     = 0;
+  private _snipCooldown = 0;
+  private _snipInterval = 0;
 
   private _assetsTotal  = 1; // camel2.glb (only GLB needed before first frame)
   private _assetsLoaded = 0;
@@ -202,6 +210,7 @@ export default class Game {
     this.scene.fog = new THREE.FogExp2(0xc4d8e8, 0.013);
 
     this.camera = new THREE.PerspectiveCamera(55, this._viewAspect(), 0.1, 300);
+    this.camera.layers.enable(1); // see detail layer (frames, glass, ledges)
     this.camera.position.set(0, 3.5, 12);
     this.camera.lookAt(0, 2.0, 0);
 
@@ -230,6 +239,7 @@ export default class Game {
     sun.shadow.camera.right   = 22;
     sun.shadow.camera.top     = 16;
     sun.shadow.camera.bottom  = -6;
+    sun.shadow.camera.layers.enable(1); // cast shadows from detail layer too
     sun.shadow.bias           = -0.001;
     this.scene.add(sun);
 
@@ -285,30 +295,55 @@ export default class Game {
   }
 
   private _buildPermanentRoad(): void {
-    const roadLen = 600;
-    const road = new THREE.Mesh(
-      new THREE.PlaneGeometry(roadLen, 7),
-      new THREE.MeshLambertMaterial({ color: 0x484848 }),
-    );
-    road.rotation.x = -Math.PI / 2;
-    road.position.set(0, 0.013, ROAD_Z);
-    road.receiveShadow = true;
-    this.scene.add(road);
+    const curve = makeRoadCurve();
+    const N     = 300;
+    const pts   = curve.getSpacedPoints(N);
 
-    const dashMat  = new THREE.MeshLambertMaterial({ color: 0xffffff });
-    const dashCount = Math.floor(roadLen / 4.2);
-    for (let i = 0; i < dashCount; i++) {
+    // Build a flat ribbon mesh from arc-length-spaced samples.
+    // offA / offB are signed perpendicular distances from road centre:
+    //   positive = far/+Z side (CW from tangent), negative = near/−Z side.
+    const buildRibbon = (offA: number, offB: number, y: number, color: number) => {
+      const verts: number[] = [], uvs: number[] = [], inds: number[] = [];
+      for (let i = 0; i <= N; i++) {
+        const p    = pts[i];
+        const prev = pts[Math.max(i - 1, 0)];
+        const next = pts[Math.min(i + 1, N)];
+        const tx   = next.x - prev.x,  tz = next.y - prev.y;
+        const tl   = Math.sqrt(tx * tx + tz * tz) || 1;
+        const px   =  tz / tl,  pz = -tx / tl;  // CW unit perp
+        verts.push(p.x + px * offA, y, p.y + pz * offA);
+        verts.push(p.x + px * offB, y, p.y + pz * offB);
+        uvs.push(0, i / N,  1, i / N);
+        if (i > 0) {
+          const b = (i - 1) * 2;
+          inds.push(b, b + 2, b + 1,  b + 1, b + 2, b + 3);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      geo.setAttribute('uv',       new THREE.Float32BufferAttribute(uvs,   2));
+      geo.setIndex(inds);
+      geo.computeVertexNormals();
+      const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color }));
+      mesh.receiveShadow = true;
+      this.scene.add(mesh);
+    };
+
+    // Road surface: near edge (−3.5) to far edge (+3.5)
+    buildRibbon(-3.5, 3.5, 0.013, 0x484848);
+
+    // Far kerb: road edge (+3.5) to outer edge (+3.78), raised to y=0.07
+    buildRibbon(3.5, 3.78, 0.07, 0xbbbbbb);
+    // Near kerb: outer edge (−3.78) to road edge (−3.5)
+    buildRibbon(-3.78, -3.5, 0.07, 0xbbbbbb);
+
+    // ── Centre-line dashes — straight section only ─────────────────────────
+    const dashMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    for (let x = ROAD_BEND_START_X + 2; x < ROAD_BEND_END_X; x += 4.2) {
       const d = new THREE.Mesh(new THREE.PlaneGeometry(2.1, 0.13), dashMat);
       d.rotation.x = -Math.PI / 2;
-      d.position.set(-roadLen / 2 + i * 4.2 + 2.1, 0.017, ROAD_Z);
+      d.position.set(x, 0.017, ROAD_Z);
       this.scene.add(d);
-    }
-
-    const kerbMat = new THREE.MeshLambertMaterial({ color: 0xbbbbbb });
-    for (const dz of [-3.6, 3.6]) {
-      const k = new THREE.Mesh(new THREE.BoxGeometry(roadLen, 0.12, 0.28), kerbMat);
-      k.position.set(0, 0.06, ROAD_Z + dz);
-      this.scene.add(k);
     }
   }
 
@@ -338,11 +373,16 @@ export default class Game {
       [ 115, -50,  20, 7.0, 13, 0x3a7a2a],
       // Deep front backdrop ridge
       [  28, 130,  75,14.0, 32, 0x2a5a1e],
+      // ── Bend-blocking hills — pushed well past the bend so they read as distant ──
+      [ -105,  50,  24, 18, 32, 0x3a7a2a],  // left-bend, on bend axis (+Z flank)
+      [ -115,  30,  20, 14, 26, 0x367828],  // left-bend, secondary
+      [  105, -28,  24, 18, 32, 0x3a7a2a],  // right-bend, on bend axis (−Z flank)
+      [  115,  -8,  20, 14, 26, 0x367828],  // right-bend, secondary
     ];
     for (const [x, z, rx, ry, rz, col] of hillData) {
       const hill = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 6), getMaterial(col));
       hill.scale.set(rx, ry, rz);
-      hill.position.set(x, ry * 0.4 - 0.5, z);
+      hill.position.set(x, -ry * 0.3, z);
       this.scene.add(hill);
     }
 
@@ -417,36 +457,36 @@ export default class Game {
       { x: -70, z: -30, s: 2.60, y: -2 },
       { x: -80, z: -28, s: 2.80, y: -2 },
       { x: -90, z: -33, s: 3.00, y: -2 },
-      // Rivelin hill trees (hill_cy≈2.3, hry=7.0, top≈8.6)
-      { x: -58, z: -42, s: 1.7, y: 7.8 },
-      { x: -52, z: -43, s: 1.5, y: 7.5 },
-      { x: -55, z: -46, s: 1.8, y: 7.0 },
-      // Bradfield moors trees (hill_cy≈2.9, hry=8.5, top≈10.55)
-      { x: -74, z: -58, s: 2.0, y: 9.8 },
-      { x: -68, z: -57, s: 1.8, y: 9.5 },
-      { x: -72, z: -61, s: 2.2, y: 9.0 },
-      // Loxley hill trees (hill_cy≈2.5, hry=7.5, top≈9.25)
-      { x: -38, z: -52, s: 1.8, y: 8.5 },
-      { x: -32, z: -51, s: 1.6, y: 8.8 },
-      { x: -35, z: -55, s: 2.0, y: 8.0 },
-      // Meersbrook hill trees (hill_cy≈1.7, hry=5.5, top≈6.65)
-      { x: -13, z: -44, s: 1.4, y: 6.0 },
-      { x:  -7, z: -45, s: 1.3, y: 6.2 },
-      // Ecclesall hill trees (hill_cy≈3.3, hry=9.5, top≈11.85)
-      { x:   5, z: -60, s: 2.3, y: 10.8 },
-      { x:  11, z: -59, s: 2.1, y: 10.5 },
-      { x:   8, z: -63, s: 2.5, y:  9.8 },
-      // Gleadless hill trees (hill_cy≈2.1, hry=6.5, top≈7.95)
-      { x:  28, z: -48, s: 1.5, y: 7.2 },
-      { x:  33, z: -49, s: 1.4, y: 7.0 },
-      // Woodhouse hill trees (hill_cy≈2.3, hry=7.0, top≈8.6)
-      { x:  50, z: -55, s: 1.7, y: 7.8 },
-      { x:  55, z: -54, s: 1.6, y: 7.5 },
-      // Deep backdrop ridge trees (hill_cy≈4.3, hry=12, top≈15.1)
-      { x: -20, z: -80, s: 3.0, y: 13.0 },
-      { x:  -5, z: -81, s: 3.2, y: 14.0 },
-      { x:  12, z: -79, s: 2.9, y: 13.5 },
-      { x:  28, z: -80, s: 2.8, y: 12.5 },
+      // Rivelin hill trees (hill_cy≈-2.1, hry=7.0, top≈4.9)
+      { x: -58, z: -42, s: 1.7, y: 3.4 },
+      { x: -52, z: -43, s: 1.5, y: 3.1 },
+      { x: -55, z: -46, s: 1.8, y: 2.6 },
+      // Bradfield moors trees (hill_cy≈-2.55, hry=8.5, top≈5.95)
+      { x: -74, z: -58, s: 2.0, y: 4.4 },
+      { x: -68, z: -57, s: 1.8, y: 4.1 },
+      { x: -72, z: -61, s: 2.2, y: 3.6 },
+      // Loxley hill trees (hill_cy≈-2.25, hry=7.5, top≈5.25)
+      { x: -38, z: -52, s: 1.8, y: 3.8 },
+      { x: -32, z: -51, s: 1.6, y: 4.1 },
+      { x: -35, z: -55, s: 2.0, y: 3.3 },
+      // Meersbrook hill trees (hill_cy≈-1.65, hry=5.5, top≈3.85)
+      { x: -13, z: -44, s: 1.4, y: 2.7 },
+      { x:  -7, z: -45, s: 1.3, y: 2.9 },
+      // Ecclesall hill trees (hill_cy≈-2.85, hry=9.5, top≈6.65)
+      { x:   5, z: -60, s: 2.3, y: 4.7 },
+      { x:  11, z: -59, s: 2.1, y: 4.4 },
+      { x:   8, z: -63, s: 2.5, y: 3.7 },
+      // Gleadless hill trees (hill_cy≈-1.95, hry=6.5, top≈4.55)
+      { x:  28, z: -48, s: 1.5, y: 3.2 },
+      { x:  33, z: -49, s: 1.4, y: 3.0 },
+      // Woodhouse hill trees (hill_cy≈-2.1, hry=7.0, top≈4.9)
+      { x:  50, z: -55, s: 1.7, y: 3.4 },
+      { x:  55, z: -54, s: 1.6, y: 3.1 },
+      // Deep backdrop ridge trees (hill_cy≈-3.6, hry=12, top≈8.4)
+      { x: -20, z: -80, s: 3.0, y: 5.1 },
+      { x:  -5, z: -81, s: 3.2, y: 6.1 },
+      { x:  12, z: -79, s: 2.9, y: 5.6 },
+      { x:  28, z: -80, s: 2.8, y: 4.6 },
     ];
 
     const [trunks, foliage] = buildTreeInstances(treePositions);
@@ -701,6 +741,9 @@ export default class Game {
     this.leaves = new LeafParticles();
     this.scene.add(this.leaves.group);
 
+    this._laser = new LaserParticles();
+    this.scene.add(this._laser.group);
+
     // Debug aim dot — bright sphere showing the snip query point on the hedge
     this._aimDot = new THREE.Mesh(
       new THREE.SphereGeometry(0.12, 8, 8),
@@ -746,6 +789,7 @@ export default class Game {
     this._loopRunning = false;
     if (this._debugKeyHandler) window.removeEventListener('keydown', this._debugKeyHandler);
     this.audio.destroy();
+    this._laser.dispose();
     this._outline.dispose();
     this._postChain.dispose();
     this._shaderPanel.destroy();
@@ -796,8 +840,21 @@ export default class Game {
 
   // Smooth per-frame updates (camera, clouds) — NOT fixed-step
   private _renderUpdate(dt: number): void {
-    this._camT += dt;
+    this._camT  += dt;
+    this._laserT += dt;
     if (this._cutscene) this._cutscene.update(dt);
+
+    // Laser Shears tier 4: targeting sight beam follows the aim position
+    const laserActive = this._toolTier >= 4
+      && this.state === GAME_STATES.PLAYING
+      && !this._admiring
+      && this._camPhase === 'playing';
+    this._laser.setSight(
+      this._aimX,
+      GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN + 0.35,
+      laserActive,
+      this._laserT,
+    );
 
     // Drift clouds eastward, wrap around
     for (const c of this._clouds) {
@@ -997,6 +1054,7 @@ export default class Game {
 
     // Particles animate in all states (win celebration, fade-out)
     this.leaves.update(dt);
+    this._laser.update(dt);
     this.input.consumeOneShots();
   }
 
@@ -1004,8 +1062,14 @@ export default class Game {
     this._t += dt;
     this.camel.update(dt);
     this.couple.update(dt);
-    if (this.input.state.start || this.input.state.launch) {
+    if (this.input.state.launch) {
       this._startNewGame();
+    } else if (this.input.state.start) {
+      if (this._highestLevel > 1) {
+        this.startFromLevel(this._highestLevel);
+      } else {
+        this._startNewGame();
+      }
     }
   }
 
@@ -1014,7 +1078,18 @@ export default class Game {
     this._trimmed = 0;
     this._score   = 0;
     this._t       = 0;
+    this._toolTier = -1;  // force onToolTier to fire even if re-starting at tier 0
     this._startLevel(1, true);
+    this._setState(GAME_STATES.PLAYING);
+  }
+
+  startFromLevel(level: number): void {
+    this.patience  = 1;
+    this._trimmed  = 0;
+    this._score    = 0;
+    this._t        = 0;
+    this._toolTier = -1;
+    this._startLevel(level, true);
     this._setState(GAME_STATES.PLAYING);
   }
 
@@ -1045,6 +1120,12 @@ export default class Game {
     this._patienceSeconds = cfg.patienceSeconds;
     this._perOvergrown    = cfg.perOvergrown;
     this._camelSpeed      = cfg.camelSpeed;
+    this._snipInterval    = cfg.snipInterval;
+    this._snipCooldown    = 0;
+    if (cfg.toolTier !== this._toolTier) {
+      this._toolTier = cfg.toolTier;
+      this.callbacks.onToolTier?.(this._toolTier, TOOL_NAMES[this._toolTier]);
+    }
 
     this._buildLevelScenery(this.hedge.halfWidth);
 
@@ -1072,19 +1153,29 @@ export default class Game {
     const aimSeg = this.hedge.getSegmentAt(aimX);
     this._aimSnippable = !!(aimSeg && this.hedge.isSnippable(aimSeg));
 
-    if (this.input.state.launch) {
+    if (this._snipCooldown > 0) this._snipCooldown -= dt;
+
+    const wantSnip = this.input.state.launch ||
+      (this._toolTier > 0 && this.input.state.actionHeld && this._snipCooldown <= 0);
+
+    if (wantSnip) {
       const seg = aimSeg;
       if (seg && this.hedge.isSnippable(seg)) {
         this.hedge.snip(seg);
         this.hedge.startGrowing(seg);
         this.camel.triggerSnip();
         this.audio.playSnip();
-        this.leaves.burst(seg.centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN, 0.3);
+        if (this._toolTier >= 4) {
+          this._laser.burst(seg.centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN, 0.3);
+        } else {
+          this.leaves.burst(seg.centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN, 0.3);
+        }
         this._trimmed++;
         const snipPts = GAME_CONFIG.SCORE.PER_SNIP * this._level;
         this._score += snipPts;
         this.callbacks.onScore?.(this._score);
         this.callbacks.onProgress?.(this.hedge.activeCount, this.hedge.segments.length);
+        this._snipCooldown = this._snipInterval;
       }
     }
 
@@ -1122,7 +1213,11 @@ export default class Game {
     // Confetti of clippings along the freshly trimmed hedge.
     const segs = this.hedge.segments;
     for (let i = 0; i < segs.length; i += 2) {
-      this.leaves.burst(segs[i].centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT + 0.5, 0.2);
+      if (this._toolTier >= 4) {
+        this._laser.burst(segs[i].centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT + 0.5, 0.2);
+      } else {
+        this.leaves.burst(segs[i].centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT + 0.5, 0.2);
+      }
     }
 
     // The couple are delighted — they amble over to admire Tom's handiwork.
@@ -1231,6 +1326,9 @@ export default class Game {
   // Public resume — called by the HUD's RESUME button / backdrop tap.
   resume(): void { this._setPaused(false); }
 
+  // Public quit to menu — called by the HUD's QUIT button.
+  goToMenu(): void { this._setState(GAME_STATES.MENU); }
+
   toggleShaderPanel(): void { this._shaderPanel.toggle(); }
 
   private _setState(next: string): void {
@@ -1253,7 +1351,11 @@ export default class Game {
       // Celebration: burst clippings from every trimmed segment
       const segs = this.hedge.segments;
       for (let i = 0; i < segs.length; i += 2) {
-        this.leaves.burst(segs[i].centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT + 0.5, 0.2);
+        if (this._toolTier >= 4) {
+          this._laser.burst(segs[i].centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT + 0.5, 0.2);
+        } else {
+          this.leaves.burst(segs[i].centerX, GAME_CONFIG.HEDGE.SEG_HEIGHT + 0.5, 0.2);
+        }
       }
       if (this._score > this._hiScore) {
         this._hiScore = this._score;

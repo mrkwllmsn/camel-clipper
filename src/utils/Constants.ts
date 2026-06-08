@@ -25,7 +25,11 @@ export interface GameCallbacks {
   onCutscenePhase?:   (phase: string) => void;
   onLoadProgress?:    (loaded: number, total: number) => void;
   onLoadComplete?:    () => void;
+  onToolTier?:        (tier: number, name: string) => void;
 }
+
+export const TOOL_NAMES = ['Manual Shears', 'Sharp Shears', 'Power Shears', 'Hedge Trimmer', 'Laser Shears'] as const;
+export type ToolTier = 0 | 1 | 2 | 3 | 4;
 
 export const COLORS = {
   sky:          0x87ceeb,
@@ -84,15 +88,20 @@ export const GAME_CONFIG = {
 // Per-level difficulty. level starts at 1; everything ramps then plateaus so a
 // long endless run stays playable rather than becoming impossible.
 export interface LevelConfig {
-  count:           number;  // hedge segments
-  overgrownCount:  number;  // how many start overgrown
-  regrowDelay:     number;  // sec dormant after a snip before regrowing
-  regrowDuration:  number;  // sec flat → fully overgrown
-  patienceSeconds: number;  // base patience drain denominator
-  perOvergrown:    number;  // extra drain rate per fully overgrown segment
-  camelSpeed:      number;  // units/sec — ramps so a longer hedge stays coverable
-  maxRegrowing:    number;  // max segments allowed to regrow simultaneously
+  count:           number;     // hedge segments
+  overgrownCount:  number;     // how many start overgrown
+  regrowDelay:     number;     // sec dormant after a snip before regrowing
+  regrowDuration:  number;     // sec flat → fully overgrown
+  patienceSeconds: number;     // base patience drain denominator
+  perOvergrown:    number;     // extra drain rate per fully overgrown segment
+  camelSpeed:      number;     // units/sec — ramps so a longer hedge stays coverable
+  maxRegrowing:    number;     // max segments allowed to regrow simultaneously
+  toolTier:        ToolTier;   // 0=manual, 1=sharp, 2=power, 3=trimmer
+  snipInterval:    number;     // sec between auto-snips when space held (0 = one-shot only)
 }
+
+// snipInterval (seconds) per tool tier when holding the snip button.
+const SNIP_INTERVALS: [number, number, number, number, number] = [0, 0.35, 0.18, 0.06, 0.025];
 
 export function getLevelConfig(level: number): LevelConfig {
   const L = Math.max(1, level) - 1;  // 0-based step
@@ -101,6 +110,8 @@ export function getLevelConfig(level: number): LevelConfig {
   // overgrown FRACTION, faster regrowth, and tighter patience — so the run never
   // plateaus. Spiral drain is normalized to the fraction overgrown (see below).
   const frac = Math.min(0.5 + L * 0.025, 0.85);   // 50%→85% of board overgrown
+  // Tool tier unlocks: L6=lvl7, L10=lvl11, L14=lvl15, L18=lvl19 (L is 0-based).
+  const toolTier = (L < 6 ? 0 : L < 10 ? 1 : L < 14 ? 2 : L < 18 ? 3 : 4) as ToolTier;
   return {
     count,
     overgrownCount:  Math.min(Math.round(count * frac), count - 1),
@@ -112,6 +123,8 @@ export function getLevelConfig(level: number): LevelConfig {
     perOvergrown:    (0.050 + L * 0.002) / count,
     camelSpeed:      Math.min(5.0 + L * 1.6, 13),
     maxRegrowing:    level,  // L1=1, L2=2, ... grows with player progression
+    toolTier,
+    snipInterval:    SNIP_INTERVALS[toolTier],
   };
 }
 

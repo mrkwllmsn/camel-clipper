@@ -62,11 +62,22 @@
       </div>
     </Transition>
 
+    <!-- Tool badge -->
+    <Transition name="tool-upgrade">
+      <div
+        :key="toolUpgradeKey"
+        class="tool-badge"
+        :class="`tool-tier-${toolTier}`"
+      >
+        {{ toolTier >= 4 ? '⚡' : '✂' }} {{ toolName }}
+      </div>
+    </Transition>
+
     <!-- Aim crosshair -->
     <div
       v-show="aimPos.visible"
       class="aim-crosshair"
-      :class="{ snippable: aimPos.snippable }"
+      :class="{ snippable: aimPos.snippable, laser: toolTier >= 4 }"
       :style="{ left: aimPos.x + '%', top: aimPos.y + '%' }"
     >
       <div class="aim-ring" />
@@ -101,6 +112,7 @@
         <div class="card-rule"><span>❧</span></div>
         <button class="pause-resume" @pointerdown.stop="resumeGame">RESUME</button>
         <button class="pause-shaders" @pointerdown.stop="openShaders">SHADERS</button>
+        <button class="pause-quit" @pointerdown.stop="quitGame">QUIT</button>
         <div class="pause-hint">{{ isTouch ? 'tap anywhere to resume' : 'press ESC to resume' }}</div>
       </div>
     </div>
@@ -139,7 +151,17 @@
           <span v-if="highestLevel > 0" class="hi-level-val">· BEST LEVEL {{ highestLevel }}</span>
         </div>
         <div class="card-rule"><span>✦</span></div>
-        <div class="press-start blink">{{ isTouch ? 'TAP TO START' : 'PRESS SPACE TO START' }}</div>
+        <template v-if="highestLevel > 1">
+          <button class="menu-continue-btn" @pointerdown.stop="continueGame">
+            CONTINUE · LEVEL {{ highestLevel }}
+          </button>
+          <div class="menu-continue-hint">{{ isTouch ? 'TAP ABOVE' : 'ENTER' }} to continue</div>
+          <div class="menu-or">— or —</div>
+          <div class="press-start blink">{{ isTouch ? 'TAP TO START NEW' : 'SPACE — NEW GAME' }}</div>
+        </template>
+        <template v-else>
+          <div class="press-start blink">{{ isTouch ? 'TAP TO START' : 'PRESS SPACE TO START' }}</div>
+        </template>
       </div>
     </div>
   </Transition>
@@ -265,6 +287,9 @@ const csPhase       = ref('')
 const isLoading     = ref(true)
 const loadProgress  = ref(0)
 const loadTotal     = ref(1)
+const toolTier      = ref(0)
+const toolName      = ref('Manual Shears')
+const toolUpgradeKey = ref(0)
 
 interface LevelStats {
   completedLevel: number
@@ -483,12 +508,19 @@ onMounted(() => {
       loadProgress.value = loadTotal.value;
       setTimeout(() => { isLoading.value = false; }, 600);
     },
+    onToolTier: (tier, name) => {
+      toolTier.value = tier;
+      toolName.value = name;
+      toolUpgradeKey.value++;
+    },
   });
   game.start();
 });
 
-function resumeGame() { game?.resume(); }
-function openShaders() { game?.toggleShaderPanel(); }
+function resumeGame()   { game?.resume(); }
+function openShaders()  { game?.toggleShaderPanel(); }
+function quitGame()     { game?.goToMenu(); }
+function continueGame() { game?.startFromLevel(highestLevel.value); }
 
 onUnmounted(() => {
   window.removeEventListener('resize', _onResize);
@@ -711,6 +743,53 @@ onUnmounted(() => {
   88%            { transform: rotate(-45deg) scale(1.3); }
 }
 
+/* ── Laser Shears crosshair (tier 4) ─────────────────────── */
+.aim-crosshair.laser {
+  --aim-color: rgba(0, 245, 255, 0.90);
+  --aim-glow:  rgba(0, 200, 255, 0.65);
+}
+.aim-crosshair.laser .aim-ring {
+  border-width: 1px;
+  border-color: var(--aim-color);
+  box-shadow:
+    0 0 14px var(--aim-glow),
+    0 0 28px var(--aim-glow),
+    inset 0 0 8px var(--aim-glow);
+  animation: laser-ring-spin 2.8s linear infinite, laser-ring-glow 0.45s ease-in-out infinite;
+}
+/* Second ring pseudo-element: outer static halo */
+.aim-crosshair.laser .aim-ring::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border: 1px solid rgba(255, 0, 255, 0.35);
+  border-radius: 50%;
+  animation: laser-ring-spin 1.8s linear infinite reverse;
+}
+.aim-crosshair.laser .aim-arm {
+  background: var(--aim-color);
+  box-shadow: 0 0 6px var(--aim-glow);
+}
+.aim-crosshair.laser .aim-blades {
+  color: #00ffff;
+  text-shadow:
+    0 0 8px rgba(0,255,255,1),
+    0 0 18px rgba(0,200,255,0.8);
+  animation: laser-blade-snap 0.5s ease-in-out infinite;
+}
+@keyframes laser-ring-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes laser-ring-glow {
+  0%, 100% { box-shadow: 0 0 14px var(--aim-glow), 0 0 28px var(--aim-glow), inset 0 0 8px var(--aim-glow); }
+  50%       { box-shadow: 0 0 22px rgba(0,255,255,0.9), 0 0 45px rgba(0,200,255,0.6), inset 0 0 14px rgba(0,255,255,0.4); }
+}
+@keyframes laser-blade-snap {
+  0%, 70%, 100% { transform: rotate(-45deg) scale(1); }
+  85%            { transform: rotate(-45deg) scale(1.4); filter: brightness(1.6); }
+}
+
 /* ── Modal system ─────────────────────────────────────────── */
 .modal-wrap {
   position: absolute;
@@ -902,6 +981,45 @@ onUnmounted(() => {
 }
 .win  .press-start { color: #1e5a0e; }
 .lose .press-start { color: #6a3010; }
+
+.menu-continue-btn {
+  width: 100%;
+  font-family: 'Luckiest Guy', cursive;
+  font-size: 21px;
+  letter-spacing: 0.5px;
+  color: #f0ffe8;
+  background: linear-gradient(180deg, #4a9a2a, #357a1c);
+  border: 2px solid #2a6014;
+  border-radius: 10px;
+  padding: 11px 0 9px;
+  margin-top: 2px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 #245210, 0 5px 12px rgba(0,0,0,0.28);
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.4);
+}
+.menu-continue-btn:hover {
+  background: linear-gradient(180deg, #58b030, #3f8e22);
+}
+.menu-continue-btn:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 #245210, 0 2px 6px rgba(0,0,0,0.28);
+}
+.menu-continue-hint {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 12px;
+  color: #7a5a28;
+  letter-spacing: 0.5px;
+  margin: 5px 0 2px;
+}
+.menu-or {
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 12px;
+  color: #8b6a3a;
+  opacity: 0.55;
+  margin: 3px 0;
+  letter-spacing: 1px;
+}
 
 /* ── Modal enter / leave transitions ─────────────────────── */
 .modal-enter-active {
@@ -1285,9 +1403,12 @@ onUnmounted(() => {
   .controls-row { gap: 8px; font-size: 14px; margin: 2px 0; }
   .ctrl-key   { font-size: 14px; padding: 2px 8px; }
   .ctrl-label { font-size: 14px; }
-  .hi-score-row { margin: 4px 0 2px; }
-  .hi-score-val { font-size: 18px; }
-  .press-start  { font-size: 16px; margin-top: 2px; }
+  .hi-score-row        { margin: 4px 0 2px; }
+  .hi-score-val        { font-size: 18px; }
+  .press-start         { font-size: 16px; margin-top: 2px; }
+  .menu-continue-btn   { font-size: 17px; padding: 8px 0 6px; }
+  .menu-continue-hint  { font-size: 10px; margin: 3px 0 1px; }
+  .menu-or             { margin: 2px 0; }
   .modal-card::before,
   .modal-card::after { font-size: 13px; top: 8px; }
   /* Compact speech bubble on landscape phones so it sits clear of the play area. */
@@ -1340,42 +1461,46 @@ onUnmounted(() => {
   text-shadow: 2px 2px 0 rgba(139,94,42,0.3);
   margin: 6px 0 0;
 }
-.pause-resume {
+.pause-resume,
+.pause-shaders,
+.pause-quit {
   font-family: 'Luckiest Guy', cursive;
-  font-size: 22px;
+  font-size: 20px;
   letter-spacing: 1px;
   color: #faf3df;
-  background: linear-gradient(180deg, #4a9a2a, #357a1c);
-  border: 2px solid #2a6014;
+  border: 2px solid transparent;
   border-radius: 10px;
-  padding: 10px 36px;
-  margin: 6px 0 10px;
+  padding: 10px 0;
+  width: 100%;
+  margin: 4px 0;
   cursor: pointer;
-  box-shadow: 0 3px 0 #245210, 0 5px 10px rgba(0,0,0,0.3);
+  box-shadow: 0 3px 0 rgba(0,0,0,0.35), 0 5px 10px rgba(0,0,0,0.25);
   transition: transform 0.08s ease, box-shadow 0.08s ease;
 }
-.pause-resume:active {
+.pause-resume:active,
+.pause-shaders:active,
+.pause-quit:active {
   transform: translateY(3px);
-  box-shadow: 0 0 0 #245210, 0 2px 6px rgba(0,0,0,0.3);
+  box-shadow: 0 0 0 rgba(0,0,0,0.35), 0 2px 6px rgba(0,0,0,0.2);
 }
+.pause-resume {
+  background: linear-gradient(180deg, #4a9a2a, #357a1c);
+  border-color: #2a6014;
+  box-shadow: 0 3px 0 #245210, 0 5px 10px rgba(0,0,0,0.3);
+}
+.pause-resume:active { box-shadow: 0 0 0 #245210, 0 2px 6px rgba(0,0,0,0.3); }
 .pause-shaders {
-  font-family: 'Luckiest Guy', cursive;
-  font-size: 14px;
-  letter-spacing: 1px;
-  color: #faf3df;
   background: linear-gradient(180deg, #7a6030, #5a4520);
-  border: 2px solid #3a2c10;
-  border-radius: 8px;
-  padding: 6px 20px;
-  margin: 0 0 8px;
-  cursor: pointer;
-  box-shadow: 0 2px 0 #2a1c08, 0 4px 8px rgba(0,0,0,0.25);
-  transition: transform 0.08s ease, box-shadow 0.08s ease;
+  border-color: #3a2c10;
+  box-shadow: 0 3px 0 #2a1c08, 0 5px 10px rgba(0,0,0,0.3);
 }
-.pause-shaders:active {
-  transform: translateY(2px);
-  box-shadow: 0 0 0 #2a1c08, 0 2px 4px rgba(0,0,0,0.25);
+.pause-shaders:active { box-shadow: 0 0 0 #2a1c08, 0 2px 6px rgba(0,0,0,0.3); }
+.pause-quit {
+  background: linear-gradient(180deg, #a03020, #7a1e10);
+  border-color: #4a1008;
+  box-shadow: 0 3px 0 #3a0c06, 0 5px 10px rgba(0,0,0,0.3);
 }
+.pause-quit:active { box-shadow: 0 0 0 #3a0c06, 0 2px 6px rgba(0,0,0,0.3); }
 .pause-hint {
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 13px;
@@ -1396,7 +1521,9 @@ onUnmounted(() => {
   .pause-card { width: min(360px, 60vw); padding: 14px 28px 12px; }
   .pause-glyph { font-size: 22px; }
   .pause-title { font-size: clamp(22px, 5vw, 30px); margin-top: 2px; }
-  .pause-resume { font-size: 18px; padding: 8px 28px; margin: 4px 0 6px; }
+  .pause-resume,
+  .pause-shaders,
+  .pause-quit { font-size: 16px; padding: 8px 0; margin: 3px 0; }
   .pause-hint { font-size: 11px; }
 }
 
@@ -1451,5 +1578,89 @@ onUnmounted(() => {
 @keyframes rotate-tilt {
   0%, 100% { transform: rotate(0deg); }
   50%       { transform: rotate(-90deg); }
+}
+
+/* ── Tool badge ───────────────────────────────────────────── */
+.tool-badge {
+  position: absolute;
+  bottom: 18px;
+  left: 18px;
+  font-family: 'Luckiest Guy', cursive;
+  font-size: 14px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.6);
+  border: 2px solid rgba(255,255,255,0.15);
+  background: rgba(0,0,0,0.35);
+  color: #a0a090;
+}
+.tool-tier-1 {
+  color: #b8e870;
+  border-color: rgba(140,220,60,0.35);
+  background: rgba(20,60,0,0.45);
+}
+.tool-tier-2 {
+  color: #f0d050;
+  border-color: rgba(220,180,40,0.4);
+  background: rgba(50,35,0,0.45);
+}
+.tool-tier-3 {
+  color: #60ffb0;
+  border-color: rgba(60,230,130,0.5);
+  background: rgba(0,50,25,0.50);
+  text-shadow: 0 0 10px rgba(60,255,140,0.55), 1px 1px 0 rgba(0,0,0,0.6);
+}
+.tool-tier-4 {
+  color: #00ffff;
+  border-color: rgba(0,220,255,0.65);
+  background: rgba(0,15,35,0.75);
+  text-shadow:
+    0 0 8px  rgba(0,255,255,1.0),
+    0 0 20px rgba(0,200,255,0.8),
+    0 0 40px rgba(0,160,255,0.4),
+    1px 1px 0 rgba(0,0,0,0.8);
+  box-shadow:
+    0 0 12px rgba(0,200,255,0.4),
+    0 0 28px rgba(0,160,255,0.2),
+    inset 0 0 8px rgba(0,200,255,0.12);
+  animation: laser-badge-pulse 1.4s ease-in-out infinite;
+}
+@keyframes laser-badge-pulse {
+  0%, 100% {
+    box-shadow: 0 0 12px rgba(0,200,255,0.4), 0 0 28px rgba(0,160,255,0.2), inset 0 0 8px rgba(0,200,255,0.12);
+    border-color: rgba(0,220,255,0.65);
+  }
+  50% {
+    box-shadow: 0 0 22px rgba(0,220,255,0.7), 0 0 48px rgba(0,180,255,0.4), inset 0 0 14px rgba(0,220,255,0.2);
+    border-color: rgba(0,255,255,0.95);
+  }
+}
+
+.tool-upgrade-enter-active {
+  animation: tool-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.tool-tier-4.tool-upgrade-enter-active {
+  animation: laser-tier-unlock 0.9s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes laser-tier-unlock {
+  0%   { opacity: 0; transform: scale(0.3) translateY(14px); filter: brightness(4) blur(4px); }
+  25%  { opacity: 1; filter: brightness(3) blur(1px); }
+  55%  { transform: scale(1.3) translateY(-5px); filter: brightness(2); }
+  75%  { filter: brightness(1.4); }
+  100% { opacity: 1; transform: scale(1) translateY(0); filter: brightness(1); }
+}
+.tool-upgrade-leave-active {
+  animation: tool-fade 0.2s ease-in forwards;
+}
+@keyframes tool-pop {
+  0%   { opacity: 0; transform: scale(0.6) translateY(6px); }
+  60%  { opacity: 1; transform: scale(1.12) translateY(-2px); }
+  100% { opacity: 1; transform: scale(1)    translateY(0); }
+}
+@keyframes tool-fade {
+  from { opacity: 1; }
+  to   { opacity: 0; }
 }
 </style>

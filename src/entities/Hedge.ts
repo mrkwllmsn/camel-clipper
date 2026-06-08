@@ -26,6 +26,7 @@ export interface SegmentData {
   regrowTimer:    number;    // >0 = dormant countdown after snip; -1 = idle
   graceTimer:     number;    // counts down from GRACE_PERIOD when growing starts; not snippable until 0
   wDisp:          number;    // displayed growth (smoothed toward target each frame)
+  trimCount:      number;    // how many times this segment has been snipped this level
   centerX:        number;
   index:          number;
 }
@@ -104,7 +105,7 @@ export class Hedge {
         group: segGroup, clumps, mat,
         isOvergrown, isGrowing: false,
         growthProgress: 0, regrowTimer: -1, graceTimer: 0,
-        wDisp: isOvergrown ? 1 : 0,
+        wDisp: isOvergrown ? 1 : 0, trimCount: 0,
         centerX, index: i,
       });
     }
@@ -220,7 +221,10 @@ export class Hedge {
   }
 
   // Schedule a snipped segment to regrow. Call immediately after snip().
+  // Each prior snip this level raises the skip chance: 1st regrow=0%, 2nd=50%, 3rd+=85%.
   startGrowing(seg: SegmentData): void {
+    const skipChance = seg.trimCount <= 1 ? 0 : seg.trimCount === 2 ? 0.50 : 0.85;
+    if (skipChance > 0 && Math.random() < skipChance) return; // stays dormant
     seg.regrowTimer    = this._regrowDelay;
     seg.isGrowing      = false;
     seg.growthProgress = 0;
@@ -233,6 +237,7 @@ export class Hedge {
     seg.growthProgress = 0;
     seg.regrowTimer    = -1;
     seg.graceTimer     = 0;
+    seg.trimCount++;
     // wDisp eases back to 0 in update() for a satisfying "snap to neat".
   }
 
