@@ -246,11 +246,9 @@
   <!-- Rotate-to-landscape prompt (touch + portrait) -->
   <Transition name="loader-fade">
     <div v-if="showRotate" class="rotate-overlay">
-        <div class="rotate-inner">
             <div class="rotate-phone">📱</div>
             <div class="rotate-title">ROTATE YOUR DEVICE</div>
             <div class="rotate-sub">Camel Clipper plays best in landscape</div>
-        </div>
     </div>
   </Transition>
 
@@ -1631,7 +1629,7 @@ onUnmounted(() => {
 .rotate-inner {
     padding:1rem;
     border-radius:1rem;
-    background:rgba(255,255,255,0.3);
+    background:rgba(255,255,255,0.9);
     animation: float-modal 3s ease infinite; 
     position:relative;
     transition:all 0.2s ease;
@@ -1655,8 +1653,7 @@ onUnmounted(() => {
   gap: 14px;
   text-align: center;
   padding: 24px;
-  background: url(images/portrait_hero.webp) no-repeat; 
-  background-size:cover;
+  background: radial-gradient(ellipse at 50% 60%, #1e4a1a 0%, #0a1f0a 70%, #040e04 100%);
   font-family: 'Luckiest Guy', cursive;
   color: #f5eed8;
 }
