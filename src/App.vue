@@ -41,6 +41,16 @@
       </div>
     </div>
 
+    <!-- Rover heat bar — only in rover levels (tier 5) -->
+    <Transition name="heat-in">
+      <div v-if="toolTier >= 5" class="heat-wrap">
+        <div class="heat-label">{{ overheated ? 'COOLING DOWN' : 'BLADE TEMP' }}</div>
+        <div class="heat-track" :class="{ danger: heat > 0.8, overheated }">
+          <div class="heat-fill" :style="{ width: heatPct, background: heatColor }" />
+        </div>
+      </div>
+    </Transition>
+
     <div class="progress-badge">
       <div class="level-badge">LEVEL {{ level }}</div>
       <div class="score-display">{{ score.toLocaleString() }}</div>
@@ -75,9 +85,9 @@
 
     <!-- Aim crosshair -->
     <div
-      v-show="aimPos.visible"
+      v-show="aimPos.visible && toolTier < 5"
       class="aim-crosshair"
-      :class="{ snippable: aimPos.snippable, laser: toolTier >= 4 }"
+      :class="{ snippable: aimPos.snippable, laser: toolTier === 4 }"
       :style="{ left: aimPos.x + '%', top: aimPos.y + '%' }"
     >
       <div class="aim-ring" />
@@ -97,6 +107,10 @@
       {{ speechText }}
       <div class="bubble-tail" />
     </div>
+
+    <Transition name="intro-cap">
+      <div v-if="introCaption" class="intro-caption">{{ introCaption }}</div>
+    </Transition>
   </div>
 
   <!-- Pause overlay -->
@@ -205,7 +219,7 @@
           <div class="score-hi-row">HI: {{ hiScore.toLocaleString() }} · BEST LVL {{ highestLevel || level }}</div>
         </div>
         <div class="card-rule lose-rule"><span>✦</span></div>
-        <div class="press-start blink">{{ isTouch ? 'TAP TO TRY AGAIN' : 'PRESS SPACE TO TRY AGAIN' }}</div>
+        <div class="press-start blink">{{ continueText }}</div>
       </div>
     </div>
   </Transition>
@@ -284,12 +298,23 @@ const highestLevel  = ref(0)
 const bonusPopText  = ref('')
 const bonusPopKey   = ref(0)
 const csPhase       = ref('')
+const introCaption  = ref<string | null>(null)
 const isLoading     = ref(true)
 const loadProgress  = ref(0)
 const loadTotal     = ref(1)
 const toolTier      = ref(0)
 const toolName      = ref('Manual Shears')
 const toolUpgradeKey = ref(0)
+const heat          = ref(0)
+const overheated    = ref(false)
+
+const heatPct   = computed(() => `${Math.round(heat.value * 100)}%`)
+const heatColor = computed(() => {
+  const h = heat.value;
+  if (h > 0.8) return '#e74c3c';
+  if (h > 0.5) return '#f39c12';
+  return '#2ecc71';
+})
 
 interface LevelStats {
   completedLevel: number
@@ -452,10 +477,11 @@ onMounted(() => {
   if (!canvasRef.value) return;
   game = new Game(canvasRef.value, {
     onCutscenePhase:   (phase) => { csPhase.value = phase; },
+    onIntroCaption:    (text) => { introCaption.value = text; },
     onStateChange:     (s) => {
       gameState.value = s;
       if (s !== 'CUTSCENE') csPhase.value = '';
-      if (s !== 'PLAYING') aimPos.value.visible = false;
+      if (s !== 'PLAYING') { aimPos.value.visible = false; introCaption.value = null; }
       if (s === 'PLAYING') {
         _levelStartScore = score.value;
         levelStats.value = null;
@@ -513,8 +539,18 @@ onMounted(() => {
       toolName.value = name;
       toolUpgradeKey.value++;
     },
+    onHeat: (h, o) => {
+      heat.value      = h;
+      overheated.value = o;
+    },
   });
   game.start();
+});
+
+const continueText = computed(() => {
+  const canContinue = highestLevel.value > 1;
+  if (isTouch) return canContinue ? `TAP TO CONTINUE FROM LEVEL ${highestLevel.value}` : 'TAP TO TRY AGAIN';
+  return canContinue ? `PRESS SPACE TO CONTINUE FROM LEVEL ${highestLevel.value}` : 'PRESS SPACE TO TRY AGAIN';
 });
 
 function resumeGame()   { game?.resume(); }
@@ -588,6 +624,42 @@ onUnmounted(() => {
   height: 100%;
   transition: width 0.3s linear, background 0.5s;
 }
+
+.heat-wrap {
+  position: absolute;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 260px;
+  text-align: center;
+}
+.heat-label {
+  font-size: 12px;
+  margin-bottom: 4px;
+  text-shadow: 1px 1px 0 #000;
+  letter-spacing: 0;
+}
+.heat-track {
+  height: 10px;
+  background: rgba(0,0,0,0.4);
+  border: 2px solid rgba(255,255,255,0.2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.heat-track.danger {
+  animation: patience-pulse 0.5s ease-in-out infinite;
+}
+.heat-track.overheated {
+  animation: patience-pulse 0.3s ease-in-out infinite;
+}
+.heat-fill {
+  height: 100%;
+  transition: width 0.1s linear, background 0.3s;
+}
+.heat-in-enter-active { transition: opacity 0.4s, transform 0.4s; }
+.heat-in-leave-active { transition: opacity 0.3s; }
+.heat-in-enter-from   { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+.heat-in-leave-to     { opacity: 0; }
 
 .progress-badge {
   position: absolute;
@@ -1143,6 +1215,34 @@ onUnmounted(() => {
   30%  { opacity: 1; transform: translateX(-50%) translateY(-10px) scale(1); }
   80%  { opacity: 1; transform: translateX(-50%) translateY(-18px) scale(1); }
   100% { opacity: 0; transform: translateX(-50%) translateY(-28px) scale(0.9); }
+}
+
+/* ── Rover-intro caption banner ───────────────────────────── */
+.intro-caption {
+  position: absolute;
+  bottom: 12%;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 80vw;
+  padding: 0.55em 1.2em;
+  font-family: 'Luckiest Guy', cursive;
+  font-size: clamp(16px, 2.8vw, 28px);
+  text-align: center;
+  color: #fff6d8;
+  background: rgba(40, 28, 14, 0.78);
+  border: 3px solid #e2b35a;
+  border-radius: 14px;
+  text-shadow: 2px 2px 0 rgba(70,40,0,0.7);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+  pointer-events: none;
+  z-index: 6;
+}
+.intro-cap-enter-active { transition: opacity 0.5s ease, transform 0.5s ease; }
+.intro-cap-leave-active { transition: opacity 0.4s ease, transform 0.4s ease; }
+.intro-cap-enter-from,
+.intro-cap-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(14px);
 }
 
 @keyframes new-hi-pulse {

@@ -26,10 +26,12 @@ export interface GameCallbacks {
   onLoadProgress?:    (loaded: number, total: number) => void;
   onLoadComplete?:    () => void;
   onToolTier?:        (tier: number, name: string) => void;
+  onHeat?:            (heat: number, overheated: boolean) => void;
+  onIntroCaption?:    (text: string | null) => void;
 }
 
-export const TOOL_NAMES = ['Manual Shears', 'Sharp Shears', 'Power Shears', 'Hedge Trimmer', 'Laser Shears'] as const;
-export type ToolTier = 0 | 1 | 2 | 3 | 4;
+export const TOOL_NAMES = ['Manual Shears', 'Sharp Shears', 'Power Shears', 'Hedge Trimmer', 'Laser Shears', 'Hedge Rover'] as const;
+export type ToolTier = 0 | 1 | 2 | 3 | 4 | 5;
 
 export const COLORS = {
   sky:          0x87ceeb,
@@ -83,6 +85,32 @@ export const GAME_CONFIG = {
     VISIBLE_HALF_X: 9.0,   // approx half-width visible at z=0 (z=12 / FOV55 rig)
     BOUND_MARGIN:   1.5,   // let the camera overshoot the visible edge slightly
   },
+  ROVER: {
+    ACCEL:               48,    // units/s² acceleration — snappy throttle response
+    FRICTION:             5,    // velocity damping factor per second
+    MAX_SPEED:           24,    // max speed units/s — zippy top end
+    SNIP_COOLDOWN:        0.15, // seconds between auto-snips
+    HEAT_PER_SNIP:        0.05, // heat gained per snip (~20 snips to overheat)
+    HEAT_DISSIPATE:       0.20, // heat lost per second while not snipping
+    OVERHEAT_COOLDOWN:    2.0,  // seconds stopped while cooling down
+    JUMP_SPEED:          12,    // initial upward velocity on Space jump (u/s)
+    JUMP_CLEAR_HEIGHT:    1.0,  // posY above which rover clears the couple (no collision)
+    GRAVITY:             26,    // downward accel applied to jump (u/s²)
+    // Tall-pillar mechanic: some hedge segments are raised into tall topiary
+    // pillars the grounded blade can't reach — the rover must jump to cut them.
+    TALL_SCALE:           1.7,  // vertical scale applied to tall segments
+    REACH_HEIGHT:         1.4,  // posY the rover must exceed to snip a tall segment
+    GROUND_REACH:         0.7,  // posY the rover must be under to snip a short segment
+    COLLISION_RADIUS:     1.1,  // rover-couple collision distance
+    PATIENCE_PENALTY:     0.10, // patience lost on collision
+    // Rover cuts far slower than fast-tier manual snipping, so the normal spiral
+    // drain (tuned for rapid overgrown knock-down) is unsurvivable here. Give rover
+    // levels their own gentle base drain and heavily damp the spiral term.
+    PATIENCE_SECONDS:    120,    // base drain denominator (gentler than ~45s normal)
+    SPIRAL_MULT:          0.2,   // scale the per-overgrown spiral drain down
+    CROSS_INTERVAL_MIN:   8,    // min seconds between couple crossings
+    CROSS_INTERVAL_MAX:  14,    // max seconds between couple crossings
+  },
 } as const;
 
 // Per-level difficulty. level starts at 1; everything ramps then plateaus so a
@@ -98,10 +126,11 @@ export interface LevelConfig {
   maxRegrowing:    number;     // max segments allowed to regrow simultaneously
   toolTier:        ToolTier;   // 0=manual, 1=sharp, 2=power, 3=trimmer
   snipInterval:    number;     // sec between auto-snips when space held (0 = one-shot only)
+  tallFraction:    number;     // fraction of segments raised into tall pillars (rover mode only)
 }
 
-// snipInterval (seconds) per tool tier when holding the snip button.
-const SNIP_INTERVALS: [number, number, number, number, number] = [0, 0.35, 0.18, 0.06, 0.025];
+// snipInterval (seconds) per tool tier when holding the snip button. Tier 5 = rover (unused, auto-snip).
+const SNIP_INTERVALS: [number, number, number, number, number, number] = [0, 0.35, 0.18, 0.06, 0.025, 0];
 
 export function getLevelConfig(level: number): LevelConfig {
   const L = Math.max(1, level) - 1;  // 0-based step
@@ -111,7 +140,7 @@ export function getLevelConfig(level: number): LevelConfig {
   // plateaus. Spiral drain is normalized to the fraction overgrown (see below).
   const frac = Math.min(0.5 + L * 0.025, 0.85);   // 50%→85% of board overgrown
   // Tool tier unlocks: L6=lvl7, L10=lvl11, L14=lvl15, L18=lvl19 (L is 0-based).
-  const toolTier = (L < 6 ? 0 : L < 10 ? 1 : L < 14 ? 2 : L < 18 ? 3 : 4) as ToolTier;
+  const toolTier = (L < 6 ? 0 : L < 10 ? 1 : L < 14 ? 2 : L < 18 ? 3 : L < 22 ? 4 : 5) as ToolTier;
   return {
     count,
     overgrownCount:  Math.min(Math.round(count * frac), count - 1),
@@ -125,6 +154,8 @@ export function getLevelConfig(level: number): LevelConfig {
     maxRegrowing:    level,  // L1=1, L2=2, ... grows with player progression
     toolTier,
     snipInterval:    SNIP_INTERVALS[toolTier],
+    // Rover levels mix in tall pillars the player must jump to reach; ramps with level.
+    tallFraction:    toolTier >= 5 ? Math.min(0.3 + (L - 22) * 0.02, 0.55) : 0,
   };
 }
 

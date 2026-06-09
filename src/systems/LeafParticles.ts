@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const POOL_SIZE   = 96;
+const POOL_SIZE   = 160;
 const BURST_COUNT = 28;
 
 const LEAF_COLORS = [0x2d7a1f, 0x3d9a2a, 0x5cb84a, 0x4a8f3f, 0x82b841, 0x1a5c14, 0x7ec850, 0x2e8b57];
@@ -51,10 +51,10 @@ export class LeafParticles {
     }
   }
 
-  burst(x: number, y: number, z: number): void {
+  burst(x: number, y: number, z: number, count: number = BURST_COUNT): void {
     let spawned = 0;
     for (const p of this._pool) {
-      if (p.active || spawned >= BURST_COUNT) continue;
+      if (p.active || spawned >= count) continue;
 
       p.active       = true;
       p.mesh.visible = true;

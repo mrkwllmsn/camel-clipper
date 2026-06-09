@@ -128,6 +128,25 @@ export class OldCouple {
 
   setImpatient(v: boolean): void { this._impatient = v; }
 
+  get manX():   number { return this._manParts.group.position.x; }
+  get manZ():   number { return this._manParts.group.position.z; }
+  get womanX(): number { return this._womanParts.group.position.x; }
+  get womanZ(): number { return this._womanParts.group.position.z; }
+
+  // Send the man into the rover lane at the given X position.
+  crossMan(targetX: number): void {
+    this._manWander.tgtX  = targetX;
+    this._manWander.tgtZ  = 1.8;
+    this._manWander.pause = 0;
+  }
+
+  // Send the woman into the rover lane at the given X position.
+  crossWoman(targetX: number): void {
+    this._womanWander.tgtX  = targetX;
+    this._womanWander.tgtZ  = 1.8;
+    this._womanWander.pause = 0;
+  }
+
   // Send the couple ambling over to stand and admire freshly trimmed work,
   // flanking `centerX` just in front of the hedge. The long pause keeps them
   // contentedly put for the duration of the curtain-call sweep.

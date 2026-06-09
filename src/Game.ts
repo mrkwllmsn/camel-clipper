@@ -3,6 +3,8 @@ import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { GAME_CONFIG, GAME_STATES, COLORS, getMaterial, getLevelConfig, TOOL_NAMES, type GameCallbacks } from './utils/Constants';
 import { Hedge } from './entities/Hedge';
 import { Camel } from './entities/Camel';
+import { Rover } from './entities/Rover';
+import { CamelSitting } from './entities/CamelSitting';
 import { OldCouple } from './entities/OldCouple';
 import { LeafParticles } from './systems/LeafParticles';
 import { LaserParticles } from './systems/LaserParticles';
@@ -18,7 +20,10 @@ import { AudioManager }     from './systems/AudioManager';
 import { Cutscene, CS_BEATS, ROAD_Z } from './entities/Cutscene';
 import { makeRoadCurve, ROAD_BEND_START_X, ROAD_BEND_END_X } from './utils/RoadPath';
 
-type CamPhase = 'menu' | 'pan-in' | 'playing' | 'admire' | 'cutscene' | 'win' | 'gameover';
+type CamPhase = 'menu' | 'pan-in' | 'playing' | 'admire' | 'cutscene' | 'rover-intro' | 'win' | 'gameover';
+
+// Duration (s) of the one-time "rover takes over" intro at the first rover level.
+const ROVER_INTRO_DUR = 8.0;
 
 export default class Game {
   private canvas:    HTMLCanvasElement;
@@ -117,6 +122,15 @@ export default class Game {
   private _laser!: LaserParticles;
   private _laserT  = 0;  // render-rate accumulator for sight beam pulsing
 
+  // Rover level entities (null when not in rover mode)
+  private _rover:        Rover | null = null;
+  private _camelSitting: CamelSitting | null = null;
+  private _isRoverLevel  = false;
+  private _crossTimer    = 0;   // seconds until next couple crossing
+  // One-time "rover takes over" intro — plays the first time rover mode is reached
+  private _roverIntro     = false;  // currently mid-intro
+  private _roverIntroDone = false;  // already shown this run
+
   private _snipOffset   = -1.5;
   private _aimX         = 0;
   private _aimSnippable = false;
@@ -166,6 +180,17 @@ export default class Game {
         if (this._cutscene) { this.scene.remove(this._cutscene.group); this._cutscene.dispose(); this._cutscene = null; }
         this._startLevel(this._level + 1, true);
         this._setState(GAME_STATES.PLAYING);
+      }
+      // Debug: jump directly to rover level (23) for testing — replays the intro
+      if (e.key === '3') {
+        if (this._cutscene) { this.scene.remove(this._cutscene.group); this._cutscene.dispose(); this._cutscene = null; }
+        this._roverIntroDone = false;
+        this._startLevel(23, true);
+        this.camel.group.visible  = false;
+        this.couple.group.visible = true;
+        if (this._rover)        this._rover.group.visible        = true;
+        if (this._camelSitting) this._camelSitting.group.visible = true;
+        this._beginRoverIntro();
       }
     };
     window.addEventListener('keydown', this._debugKeyHandler);
@@ -863,7 +888,8 @@ export default class Game {
       );
     }
 
-    if (this.callbacks.onAimScreenPos && this.state === 'PLAYING' && !this._admiring && this._camPhase === 'playing') {
+    // Crosshair reticle — normal levels only; rover mode has no aim point.
+    if (this.callbacks.onAimScreenPos && !this._isRoverLevel && this.state === 'PLAYING' && !this._admiring && this._camPhase === 'playing') {
       const aimWorld = new THREE.Vector3(this._aimX, GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN + 0.15, 0);
       const ndc = aimWorld.project(this.camera);
       this.callbacks.onAimScreenPos(
@@ -882,8 +908,9 @@ export default class Game {
     this._laserT += dt;
     if (this._cutscene) this._cutscene.update(dt);
 
-    // Laser Shears tier 4: targeting sight beam follows the aim position
-    const laserActive = this._toolTier >= 4
+    // Laser Shears tier 4: targeting sight beam follows the aim position.
+    // Excludes rover mode (tier 5), which has no aim point.
+    const laserActive = this._toolTier === 4
       && this.state === GAME_STATES.PLAYING
       && !this._admiring
       && this._camPhase === 'playing';
@@ -933,8 +960,9 @@ export default class Game {
       // Follow Tom along X with easing + lookahead, clamped to the level bounds.
       const cam = GAME_CONFIG.CAMERA;
       const dir = Math.sign(this.input.state.moveX);
+      const followX = this._isRoverLevel ? (this._rover?.x ?? 0) : this.camel.x;
       const tgt = Math.max(-this._camBoundX, Math.min(this._camBoundX,
-        this.camel.x + dir * cam.LOOKAHEAD));
+        followX + dir * cam.LOOKAHEAD));
       this._camFollowX += (tgt - this._camFollowX) * Math.min(1, dt * cam.FOLLOW_EASE);
       const bob = Math.sin(this._camT * 1.7) * 0.04;
       this.camera.position.set(this._camFollowX, 3.5 + bob, 12);
@@ -1037,6 +1065,35 @@ export default class Game {
         if (cs.done) this._endCutscene();
       }
 
+    } else if (this._camPhase === 'rover-intro') {
+      // Three beats: (1) open close on Tom kicking back in his chair, (2) pan back
+      // and across to the hedge, (3) follow the Rover zooming in to trim.
+      const ct   = this._camT;
+      const rx   = this._rover?.x ?? 0;
+      const tomX = this.hedge.rightX + 1.5;
+      if (ct < 2.6) {
+        // Beat 1: tight on Tom, slow push-in.
+        const e = ss(Math.min(ct / 2.6, 1));
+        this._camPosA.set(tomX + 2.7, 1.9, 5.6);
+        this._camPosB.set(tomX + 1.9, 2.1, 4.7);
+        this._camLookTgt.set(tomX, 1.3, 2.4);
+        this.camera.position.lerpVectors(this._camPosA, this._camPosB, e);
+      } else if (ct < 4.0) {
+        // Beat 2: swing back and across toward the rover's starting end.
+        const e = ss((ct - 2.6) / 1.4);
+        this._camPosA.set(tomX + 1.9, 2.1, 4.7);
+        this._camPosB.set(rx, 3.4, 11.5);
+        this._camLookA.set(tomX, 1.3, 2.4);
+        this._camLookB.set(rx, 1.7, 0);
+        this.camera.position.lerpVectors(this._camPosA, this._camPosB, e);
+        this._camLookTgt.lerpVectors(this._camLookA, this._camLookB, e);
+      } else {
+        // Beat 3: follow the rover as it trims its way along the hedge.
+        this.camera.position.set(rx, 3.4, 11.5);
+        this._camLookTgt.set(rx, 1.7, 0);
+      }
+      this.camera.lookAt(this._camLookTgt);
+
     } else if (this._camPhase === 'win') {
       // Triumphant pull-back + rise — reveals the whole trimmed hedge
       const WIN_DUR = 3.5;
@@ -1117,6 +1174,7 @@ export default class Game {
     this._score   = 0;
     this._t       = 0;
     this._toolTier = -1;  // force onToolTier to fire even if re-starting at tier 0
+    this._roverIntroDone = false;
     this._startLevel(1, true);
     this._setState(GAME_STATES.PLAYING);
   }
@@ -1127,6 +1185,9 @@ export default class Game {
     this._score    = 0;
     this._t        = 0;
     this._toolTier = -1;
+    // Starting straight into rover territory shouldn't replay the intro mid-jump;
+    // only the natural progression past L23 should trigger it.
+    this._roverIntroDone = getLevelConfig(level).toolTier >= 5;
     this._startLevel(level, true);
     this._setState(GAME_STATES.PLAYING);
   }
@@ -1167,6 +1228,41 @@ export default class Game {
 
     this._buildLevelScenery(this.hedge.halfWidth);
 
+    // Rover level setup
+    const wasRoverLevel = this._isRoverLevel;
+    this._isRoverLevel = cfg.toolTier >= 5;
+
+    if (this._isRoverLevel) {
+      // First entry into rover mode: create entities
+      if (!wasRoverLevel) {
+        this.camel.group.visible = false;
+        this._rover = new Rover();
+        this.scene.add(this._rover.group);
+        const seatX = this.hedge.rightX + 1.5;
+        this._camelSitting = new CamelSitting(seatX, 2.4);
+        this.scene.add(this._camelSitting.group);
+      }
+      // Reposition sitting camel and reset rover each level
+      if (this._camelSitting) {
+        this._camelSitting.group.position.x = this.hedge.rightX + 1.5;
+      }
+      if (this._rover) { this._rover.x = 0; this._rover.velX = 0; this._rover.heat = 0; this._rover.isOverheated = false; }
+      // Rover snips the segment directly beneath it (no aim offset), so it must be
+      // able to travel the full hedge span — not the camel's offset-shifted range.
+      this._camelMinX = this.hedge.leftX;
+      this._camelMaxX = this.hedge.rightX;
+      this._crossTimer = GAME_CONFIG.ROVER.CROSS_INTERVAL_MIN
+        + Math.random() * (GAME_CONFIG.ROVER.CROSS_INTERVAL_MAX - GAME_CONFIG.ROVER.CROSS_INTERVAL_MIN);
+      // Rover can't snip fast enough to outrun the normal spiral drain — soften it.
+      this._patienceSeconds = GAME_CONFIG.ROVER.PATIENCE_SECONDS;
+      this._perOvergrown    = cfg.perOvergrown * GAME_CONFIG.ROVER.SPIRAL_MULT;
+    } else if (wasRoverLevel) {
+      // Returning to normal (shouldn't happen mid-run, but clean up)
+      if (this._rover) { this.scene.remove(this._rover.group); this._rover = null; }
+      if (this._camelSitting) { this.scene.remove(this._camelSitting.group); this._camelSitting = null; }
+      this.camel.group.visible = true;
+    }
+
     this.patience = 1;  // always reset to full — each level is a fresh challenge
 
     this.couple.setImpatient(this.patience < 0.5);
@@ -1178,9 +1274,11 @@ export default class Game {
   private _tickPlaying(dt: number): void {
     this._t += dt;
 
-    // During the level-clear interlude, gameplay is frozen — only the curtain-
-    // call choreography (camel centring, couple gathering, gentle sway) runs.
     if (this._admiring) { this._tickAdmire(dt); return; }
+
+    if (this._roverIntro) { this._tickRoverIntro(dt); return; }
+
+    if (this._isRoverLevel) { this._tickPlayingRover(dt); return; }
 
     const newX = this.camel.x + this.input.state.moveX * this._camelSpeed * dt;
     this.camel.x = Math.max(this._camelMinX, Math.min(this._camelMaxX, newX));
@@ -1238,6 +1336,82 @@ export default class Game {
     }
   }
 
+  private _tickPlayingRover(dt: number): void {
+    const rover = this._rover!;
+    const cfg   = GAME_CONFIG.ROVER;
+
+    if (this.input.state.launch) rover.jump();
+    rover.update(dt, this.input.state.moveX, this._camelMinX, this._camelMaxX);
+    rover.coolPassive(dt);
+    this._camelSitting?.update(dt);
+
+    // Auto-snip: trim whatever segment the rover is currently over — but only if
+    // the blade can reach it. Tall pillars demand a jump; short hedges are cut
+    // from the ground (and can't be snipped mid-leap, so jumps stay deliberate).
+    if (!rover.isOverheated && this._snipCooldown <= 0) {
+      const seg = this.hedge.getSegmentAt(rover.x);
+      const canReach = seg && (seg.tall
+        ? rover.posY >= cfg.REACH_HEIGHT
+        : rover.posY <= cfg.GROUND_REACH);
+      if (seg && canReach && this.hedge.isSnippable(seg)) {
+        this.hedge.snip(seg);
+        this.hedge.startGrowing(seg);
+        rover.addHeat(cfg.HEAT_PER_SNIP);
+        // Rover shreds the hedge — a big leafy burst instead of laser sparks.
+        const topY = this.hedge.segTopY(seg);
+        this.leaves.burst(seg.centerX, topY, 0.3, 56);
+        this.leaves.burst(seg.centerX, topY * 0.6, 0.3, 24);
+        this._trimmed++;
+        const snipPts = GAME_CONFIG.SCORE.PER_SNIP * this._level;
+        this._score += snipPts;
+        this.callbacks.onScore?.(this._score);
+        this.callbacks.onProgress?.(this.hedge.activeCount, this.hedge.segments.length);
+        this._snipCooldown = cfg.SNIP_COOLDOWN;
+      }
+    }
+    if (this._snipCooldown > 0) this._snipCooldown -= dt;
+
+    this.callbacks.onHeat?.(rover.heat, rover.isOverheated);
+
+    // Couple crossing — periodically send one member through the rover lane
+    this._crossTimer -= dt;
+    if (this._crossTimer <= 0) {
+      this._crossTimer = cfg.CROSS_INTERVAL_MIN
+        + Math.random() * (cfg.CROSS_INTERVAL_MAX - cfg.CROSS_INTERVAL_MIN);
+      const toRight  = Math.random() < 0.5;
+      const toX      = toRight ? this.hedge.rightX + 1 : this.hedge.leftX - 1;
+      if (Math.random() < 0.5) {
+        this.couple.crossMan(toX);
+      } else {
+        this.couple.crossWoman(toX);
+      }
+    }
+
+    // Collision: rover hits a couple member — patience penalty + knockback.
+    // Jumping clears the couple: skip the check while airborne above their head height.
+    const rX = rover.x, rZ = GAME_CONFIG.CAMEL.Z;
+    const airborneOver = rover.posY > cfg.JUMP_CLEAR_HEIGHT;
+    if (!rover.isOverheated && !airborneOver && (
+      Math.hypot(rX - this.couple.manX, rZ - this.couple.manZ) < cfg.COLLISION_RADIUS ||
+      Math.hypot(rX - this.couple.womanX, rZ - this.couple.womanZ) < cfg.COLLISION_RADIUS
+    )) {
+      this.patience = Math.max(0, this.patience - cfg.PATIENCE_PENALTY);
+      rover.velX *= -0.6;
+    }
+
+    // Patience drain (same formula as normal mode)
+    const overdrainRate = this.hedge.overgrownCount * this._perOvergrown;
+    this.patience = Math.max(0, this.patience - (1 / this._patienceSeconds + overdrainRate) * dt);
+    this.callbacks.onPatience?.(this.patience);
+    this.couple.setImpatient(this.patience < 0.5);
+    this.couple.update(dt);
+    this.hedge.update(dt);
+    this.callbacks.onProgress?.(this.hedge.activeCount, this.hedge.segments.length);
+
+    if (this.hedge.allClear) { this._beginAdmire(); return; }
+    if (this.patience <= 0)  { this._setState(GAME_STATES.GAME_OVER); }
+  }
+
   // Kick off the "admire your work" interlude after a level is cleared.
   private _beginAdmire(): void {
     this._admiring         = true;
@@ -1278,9 +1452,15 @@ export default class Game {
   private _tickAdmire(dt: number): void {
     this._admireT += dt;
 
-    // Ease Tom to centre stage for the curtain call.
-    this.camel.x += (0 - this.camel.x) * Math.min(1, dt * 2);
-    this.camel.update(dt);
+    if (this._isRoverLevel) {
+      // Rover coasts to a stop
+      this._rover?.update(dt, 0, this._camelMinX, this._camelMaxX);
+      this._camelSitting?.update(dt);
+    } else {
+      // Ease Tom to centre stage for the curtain call.
+      this.camel.x += (0 - this.camel.x) * Math.min(1, dt * 2);
+      this.camel.update(dt);
+    }
     this.couple.update(dt);
     this.hedge.update(dt);
 
@@ -1303,6 +1483,8 @@ export default class Game {
     this._streetGroup = this._cutscene.streetGroup;
     this.camel.group.visible  = false;
     this.couple.group.visible = false;
+    if (this._rover)        this._rover.group.visible        = false;
+    if (this._camelSitting) this._camelSitting.group.visible = false;
     // Camera starts right of car; depart phase eases from here
     this._csFollowX = this._csRoadStartX + 1;
     this._camPhase  = 'cutscene';
@@ -1336,12 +1518,107 @@ export default class Game {
     this.scene.remove(this._cutscene.group);
     this._cutscene.dispose();
     this._cutscene = null;
-    this.camel.group.visible  = true;
+    this.camel.group.visible  = !this._isRoverLevel;
     this.couple.group.visible = true;
+    if (this._rover)        this._rover.group.visible        = this._isRoverLevel;
+    if (this._camelSitting) this._camelSitting.group.visible = this._isRoverLevel;
     this._csPrevPhase = '';
+    this._camT     = 0;
+    // First arrival at a rover garden: roll the one-time "rover takes over" intro
+    // instead of the usual pan-in.
+    if (this._isRoverLevel && !this._roverIntroDone) {
+      this._beginRoverIntro();
+    } else {
+      this._camPhase = 'pan-in';
+      this._setState(GAME_STATES.PLAYING);
+    }
+  }
+
+  // One-time showcase: Tom sits by his signpost while the new Rover rolls along
+  // the hedge auto-trimming a few sections, then control passes to the player.
+  // Demo-snipped bushes regrow on the normal timer, so the level stays intact.
+  private _beginRoverIntro(): void {
+    this._roverIntro     = true;
+    this._roverIntroDone = true;
+    // Park the rover just off the left end, ready to drive across.
+    if (this._rover) {
+      this._rover.x            = this.hedge.leftX - 1.5;
+      this._rover.velX         = 0;
+      this._rover.heat         = 0;
+      this._rover.isOverheated = false;
+      this._rover.group.rotation.y = 0;   // face +X (driving right)
+    }
+    this._snipCooldown = 0;
+    this.callbacks.onIntroCaption?.('Tom hangs up his shears — let the Rover take it from here!');
+    // Enter PLAYING first — _setState forces camPhase to 'pan-in', so claim the
+    // rover-intro phase *after* it (mirrors how CUTSCENE is handled).
+    this._setState(GAME_STATES.PLAYING);
+    this._camPhase = 'rover-intro';
+    this._camT     = 0;
+  }
+
+  private _tickRoverIntro(dt: number): void {
+    const rover = this._rover;
+    const cfg   = GAME_CONFIG.ROVER;
+
+    // Idle life: Tom's head-turn, couple ambling, foliage sway.
+    this._camelSitting?.update(dt);
+    this.couple.update(dt);
+    this.hedge.update(dt);
+
+    if (rover) {
+      // Scripted glide from the left end to the right end. Stays parked off the
+      // left edge through the Tom beat + pan, then rolls once the camera arrives.
+      const driveStart = 3.0;
+      const driveEnd   = ROVER_INTRO_DUR - 0.8;
+      const p = Math.max(0, Math.min(1, (this._camT - driveStart) / (driveEnd - driveStart)));
+      const e = p * p * (3 - 2 * p);  // smoothstep so it eases in and out
+      const fromX = this.hedge.leftX - 1.5;
+      const toX   = 0;   // ease to mid-screen — where the player takes over (no jump)
+      const prevX = rover.x;
+      rover.x = fromX + (toX - fromX) * e;
+      rover.group.rotation.y = rover.x >= prevX ? 0 : Math.PI;
+      // Subtle driving bounce.
+      rover.group.position.y = Math.abs(Math.sin(this._camT * 9)) * 0.06;
+
+      // Auto-snip the short bush it's rolling over — pure spectacle, regrows later.
+      // Leave at least a few overgrown so the board can't auto-clear mid-intro.
+      if (this._snipCooldown <= 0 && this.hedge.overgrownCount > 3) {
+        const seg = this.hedge.getSegmentAt(rover.x);
+        if (seg && !seg.tall && this.hedge.isSnippable(seg)) {
+          this.hedge.snip(seg);
+          this.hedge.startGrowing(seg);
+          const topY = this.hedge.segTopY(seg);
+          this.leaves.burst(seg.centerX, topY, 0.3, 56);
+          this.leaves.burst(seg.centerX, topY * 0.6, 0.3, 24);
+          this._snipCooldown = cfg.SNIP_COOLDOWN;
+        }
+      }
+      if (this._snipCooldown > 0) this._snipCooldown -= dt;
+    }
+
+    // Skip on input, or finish when the window elapses.
+    if (this.input.state.start || this.input.state.launch || this._camT >= ROVER_INTRO_DUR) {
+      this._endRoverIntro();
+    }
+  }
+
+  private _endRoverIntro(): void {
+    this._roverIntro = false;
+    this.callbacks.onIntroCaption?.(null);
+    // Reset the rover to centre and clear any demo heat before the player drives.
+    if (this._rover) {
+      this._rover.x                = 0;
+      this._rover.velX             = 0;
+      this._rover.heat             = 0;
+      this._rover.isOverheated     = false;
+      this._rover.group.position.y = 0;
+      this._rover.group.rotation.y = 0;
+    }
+    this._snipCooldown = 0;
+    this._camFollowX = 0;
     this._camPhase = 'pan-in';
     this._camT     = 0;
-    this._setState(GAME_STATES.PLAYING);
   }
 
   private _tickEndScreen(dt: number): void {
@@ -1351,7 +1628,13 @@ export default class Game {
     // score screen before the player has even seen it.
     if (this._camT < 1.2) return;
     if (this.input.state.start || this.input.state.launch) {
-      this._setState(GAME_STATES.MENU);
+      // On game over, if a checkpoint exists, Space/Enter continues from the
+      // highest level reached rather than dropping back to the menu.
+      if (this.state === GAME_STATES.GAME_OVER && this._highestLevel > 1) {
+        this.startFromLevel(this._highestLevel);
+      } else {
+        this._setState(GAME_STATES.MENU);
+      }
     }
   }
 

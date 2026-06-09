@@ -21,6 +21,7 @@ export interface SegmentData {
   clumps:         Clump[];
   mat:            THREE.MeshLambertMaterial;
   isOvergrown:    boolean;
+  tall:           boolean;   // raised into a tall pillar — rover must jump to reach it
   isGrowing:      boolean;   // in active growth phase — snippable early for a point
   growthProgress: number;    // 0→1 during isGrowing
   regrowTimer:    number;    // >0 = dormant countdown after snip; -1 = idle
@@ -83,15 +84,21 @@ export class Hedge {
     this.startX = -((level.count - 1) * cfg.SEG_STEP) / 2;
 
     const indices  = Array.from({ length: level.count }, (_, i) => i);
-    const shuffled = [...indices].sort(() => Math.random() - 0.5);
-    const grown    = new Set(shuffled.slice(0, level.overgrownCount));
+    const grown    = new Set([...indices].sort(() => Math.random() - 0.5).slice(0, level.overgrownCount));
+    // Tall pillars picked from an independent shuffle so they don't correlate
+    // with which segments start overgrown.
+    const tallCount = Math.round(level.count * level.tallFraction);
+    const tall      = new Set([...indices].sort(() => Math.random() - 0.5).slice(0, tallCount));
 
     for (let i = 0; i < level.count; i++) {
       const isOvergrown = grown.has(i);
+      const isTall      = tall.has(i);
       const centerX     = this.startX + i * cfg.SEG_STEP;
 
       const segGroup = new THREE.Group();
       segGroup.position.set(centerX, 0, 0);
+      // Tall segments stretch upward so the grounded rover blade can't reach them.
+      if (isTall) segGroup.scale.y = GAME_CONFIG.ROVER.TALL_SCALE;
 
       const mat = new THREE.MeshLambertMaterial({
         color: isOvergrown ? _wildColor : _neatColor,
@@ -103,7 +110,7 @@ export class Hedge {
       this.group.add(segGroup);
       this.segments.push({
         group: segGroup, clumps, mat,
-        isOvergrown, isGrowing: false,
+        isOvergrown, tall: isTall, isGrowing: false,
         growthProgress: 0, regrowTimer: -1, graceTimer: 0,
         wDisp: isOvergrown ? 1 : 0, trimCount: 0,
         centerX, index: i,
@@ -243,6 +250,12 @@ export class Hedge {
 
   isSnippable(seg: SegmentData): boolean {
     return seg.isOvergrown || (seg.isGrowing && seg.graceTimer <= 0);
+  }
+
+  // Approximate world-space top of a segment's foliage — tall pillars sit higher.
+  segTopY(seg: SegmentData): number {
+    const top = GAME_CONFIG.HEDGE.SEG_HEIGHT_GROWN;
+    return seg.tall ? top * GAME_CONFIG.ROVER.TALL_SCALE : top;
   }
 
   update(dt: number): void {
